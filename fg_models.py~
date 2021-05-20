@@ -1,0 +1,61 @@
+import pymc3 as pymc
+import numpy as np
+import pickle
+import theano
+import theano.tensor as tt
+from theano.compile.ops import as_op
+from sed_lib import calc_spec_cxd
+
+theano.config.exception_verbosity='high'
+#theano.config.optimizer='None'
+
+def init(sed_model, data, errors, freqs, freq_pairs, do_sim):
+
+    with pymc.Model() as model:
+        #Define priors, maybe different for sim and data
+        if do_sim:
+            a_sync = pymc.Uniform('synchrotron_amplitude', -100, 1000)
+            b_sync = pymc.Bound(pymc.Normal, lower=-4, upper=-0.2)('synchrotron_beta', mu=-1.0, sigma=0.37)
+            a_dust = pymc.Uniform('dust_amplitude', -100, 5000)
+            b_dust = pymc.Uniform('dust_beta', 0.2, 4)
+            a_cmb = pymc.Uniform('cmb_amplitude', -4, 4)
+            corr_coeff = pymc.Uniform('correlation_coefficient', -0.9, 0.9)
+            dxc_corr = pymc.Bound(pymc.Normal, lower=-0.9, upper=0.9)('dustxcmb_correlation', mu=0, sigma=0.073)
+        else:
+            a_sync = pymc.Uniform('synchrotron_amplitude', -100, 1000)
+            b_sync = pymc.Bound(pymc.Normal, lower=-4, upper=-0.2)('synchrotron_beta', mu=-1.0, sigma=0.37)
+            a_dust = pymc.Uniform('dust_amplitude', -100, 5000)
+            b_dust = pymc.Uniform('dust_beta', 0.2, 4)
+            a_cmb = pymc.Uniform('cmb_amplitude', -4, 4)
+            corr_coeff = pymc.Uniform('correlation_coefficient', -0.9, 0.9)
+            dxc_corr = pymc.Bound(pymc.Normal, lower=-0.9, upper=0.9)('dustxcmb_correlation', mu=0, sigma=0.073)
+    
+    obs = {}
+
+    with model:
+        
+        #### MODELS ###
+
+        #Standard model, includes dust-cmb corr
+        if sed_model == 'dustxcmb':
+            @as_op(itypes=[tt.dscalar, tt.dscalar, tt.dscalar, tt.dscalar, tt.dscalar, tt.dscalar, tt.dscalar],
+                   otypes=[tt.dvector])
+            def calcs(As, bs, Ad, bd, Ac, rho, delta):
+                vals, samples = calc_spec_cxd(As, bs, Ad, bd, Ac, 0, 0, rho, delta, freq_pairs, samples=freqs, manual_samples=True)
+                return [vals]
+
+        ### END MODELS ###
+
+        powers = calcs(a_sync, b_sync, a_dust, b_dust, a_cmb, corr_coeff, dxc_corr)
+        dat_cov = np.diag(errors)
+        f = pymc.MvNormal('observed_power', mu=powers, cov=dat_cov, observed=data)
+        
+        #for i in range(len(data)):
+            #obs[i] = pymc.Normal('observed_power_'+str(i), mu=powers[i], sigma=errors[i], observed=data[i])
+
+        return model
+
+
+
+if __name__ == '__main__':
+    print("To use these models, import this file and call fg_model.init")
