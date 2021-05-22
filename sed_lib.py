@@ -11,6 +11,8 @@ import scipy.stats
 import copy
 import random
 import math
+from contextlib import contextmanager
+import sys
 
 pickledir = '/mnt/spider2/jvlist/pickles/'
 
@@ -675,48 +677,13 @@ def correct_units(val, freq, bd, bs):
 
     return val*factor
 
-def get_data(do_sim, do_harmonic=False, do_log=False, custom_dir=None, extra_params=[], ells_to_do=['20.0', '45.0', '70.0', '95.0', '120.0'], pols_to_do=['EE','BB','EB']):
+def get_data(d, ells_to_do=['20.0', '45.0', '70.0', '95.0', '120.0', '145.0', '170.0'], pols_to_do=['EE','BB','EB']):
+    traces = {ell:{pol:None for pol in pols_to_do} for ell in ells_to_do}
 
-    if not do_harmonic:
-        traces = {ell:{pol:{param:[] for param in ['synchrotron_amplitude','synchrotron_beta','dust_amplitude','dust_beta','cmb_amplitude','correlation_coefficient']+extra_params} for pol in ['EE','BB','EB']} for ell in ells_to_do}#['20.0', '45.0', '70.0', '95.0', '120.0']}
-        for p in ['synchrotron_amplitude','synchrotron_beta','dust_amplitude','dust_beta','cmb_amplitude','correlation_coefficient']+extra_params:
-            for pol in pols_to_do:#['EE','BB','EB']:
-                for ell in ells_to_do:#['20.0', '45.0', '70.0', '95.0', '120.0']:
-                    if custom_dir != None:
-                        with open(custom_dir+'/{}_{}_{}.csv'.format(p,ell,pol), 'r') as f:
-                            traces[ell][pol][p] = trim_trace(map(float, f.read().split(',')[1:]))
-                    elif do_sim:
-                        if not do_log:
-                            with open('/scratch/jvlist/metatraces_sim/{}_{}_{}.csv'.format(p,ell,pol), 'r') as f:
-                                #with open('/mnt/spider2/jvlist/metatraces/m2/{}_{}_{}.csv'.format(p,ell,pol), 'r') as f:
-                                traces[ell][pol][p] = trim_trace(map(float, f.read().split(',')[1:]))
-                        else:
-                            with open('/scratch/jvlist/metatraces_lognorm_sim/{}_{}_{}.csv'.format(p,ell,pol), 'r') as f:
-                                traces[ell][pol][p] = trim_trace(map(float, f.read().split(',')[1:]))
-
-                    elif not do_sim:
-                        if not do_log:
-                            with open('/scratch/jvlist/metatraces/{}_{}_{}.csv'.format(p,ell,pol), 'r') as f:
-                                traces[ell][pol][p] = trim_trace(map(float, f.read().split(',')[1:]))
-                        else:
-                            with open('/scratch/jvlist/metatraces_lognorm/{}_{}_{}.csv'.format(p,ell,pol), 'r') as f:
-                                traces[ell][pol][p] = trim_trace(map(float, f.read().split(',')[1:]))
-
-
-    else:
-        traces = {pol:{param:[] for param in ['cmb_amplitude','dust_amplitude','dust_beta','dustxcmb_correlation','harmonic_index']+extra_params} for pol in ['EE','BB','EB']}
-        for p in ['cmb_amplitude','dust_amplitude','dust_beta','dustxcmb_correlation','harmonic_index']+extra_params:
-            for pol in pols_to_do:
-                if custom_dir != None:
-                    with open(custom_dir+'/{}_{}.csv'.format(p, pol), 'r') as f:
-                        traces[pol][p] = trim_trace(map(float, f.read().split(',')[2:]))
-                elif do_sim:
-                    with open('/scratch/jvlist/metatraces_harmonic/{}_{}.csv'.format(p, pol), 'r') as f:
-                        traces[pol][p] = trim_trace(map(float, f.read().split(',')[2:]))
-
-                elif not do_sim:
-                    foo = 1
-                    #Todo
+    for pol in pols_to_do:
+        for ell in ells_to_do:
+            with open(d+'/{}_{}_trace.p'.format(ell,pol), 'rb') as pfile:
+                traces[ell][pol] = pickle.load(pfile)
 
     return traces
 
@@ -1299,3 +1266,25 @@ def grad_wrap(f):
         return f
     except (ZeroDivisionError, ValueError):
         return None
+
+@contextmanager
+def add_prefix(prefix): 
+    global is_new_line
+    orig_write = sys.stdout.write
+    is_new_line = True
+
+    def new_write(*args, **kwargs):
+        global is_new_line
+
+        if args[0] == "\n":
+            is_new_line = True
+
+        elif is_new_line:
+            orig_write("[" + str(prefix) + "]: ")
+            is_new_line = False
+
+        orig_write(*args, **kwargs)
+
+    sys.stdout.write = new_write
+    yield
+    sys.stdout.write = orig_write

@@ -1,5 +1,3 @@
-#import spider_analysis as sa
-import fg_models
 import numpy as np
 import pickle
 import sed_lib as sl
@@ -10,6 +8,7 @@ import logging
 import logging.handlers
 import os.path
 import spider_analysis as sa
+import json
 
 default_names = { 23: 'map_wmap_k',
                   30: 'map_wmap_ka',
@@ -42,7 +41,8 @@ default_noise = { 23: 'map_23_{}',
 basefs = [23, 30, 40, 60, 90, 94.5, 101.3, 141.9, 150.5, 220.6, 359.7]
 autofs1 = [94.51, 94.52, 94.53, 94.54]
 autofs2 = [150.51, 150.52, 150.53, 150.54]
-f = lambda l: [(f1*f2)**0.5 for f1 in l for f2 in l] 
+exclfs = [94.5, 150.5]+autofs1+autofs2
+f = lambda l: [(f1*f2)**0.5 for f1 in l for f2 in l if (f1*f2)**0.5 not in exclfs] 
 default_fs = f(basefs) + f(autofs1) + f(autofs2)
 
 
@@ -97,7 +97,7 @@ class SED(object):
                  auto_suffixes = default_suffixes,
                  noise_dict = default_noise,
                  spec_file = '/projects/WCJONES/spider/jvlist/specs/SED_leakage_subtract.p', 
-                 spec_err = '/projects/WCJONES/spider/jvlist/specs/SED_xflike_model_sims.p', 
+                 spec_err_file = '/projects/WCJONES/spider/jvlist/specs/SED_xflike_model_sims.p', 
                  post_dir = '/scratch/gpfs/jvlist/posteriors_leakage_subtract/',
                  misc_dir = '/projects/WCJONES/spider/jvlist/SED_misc/',
                  pairs_file = 'freq_pairs.p',
@@ -110,8 +110,10 @@ class SED(object):
                  pols = ['EE', 'BB'],
                  recompute = None,
                  override_config = False,
-                 slurm_opts = {'mem':1, 'nodes':1, 'ppn':1, 'wallt':24, 'scheduler':'slurm', 
-                               'queue':'spider', 'nice':100},
+                 sopts = dict(mem=4, wallt=2,
+                              ppn=14, mpi_procs=14, omp_threads=1, nodes=1,
+                              scheduler='slurm', nice=None, queue="physics",
+                              env_script=os.path.join(os.environ["SPIDER_ROOT"], "spider_py3_setup.sh")),
                  logfile = './sed.log',
              ):
         self.map_dir = map_dir
@@ -119,7 +121,7 @@ class SED(object):
         self.auto_suffixes = auto_suffixes
         self.noise_dict = noise_dict
         self.spec_file = spec_file
-        self.spec_err = spec_err
+        self.spec_err_file = spec_err_file
         self.post_dir = post_dir
         self.misc_dir = misc_dir
         self.do_sim = do_sim
@@ -130,7 +132,7 @@ class SED(object):
         self.pols = pols
         self.recompute = recompute
         self.override_config = override_config
-        self.slurm_opts = slurm_opts
+        self.sopts = sopts
         self.logfile = logfile
 
 
@@ -142,7 +144,7 @@ class SED(object):
         # Things that will be checked before overwriting posteriors
         self.config_to_check = ['map_dir','do_sim','do_cxd','fs_to_do','sed_model','ells','pols']  
 
-        ### Setup logging ###
+        # Setup logging
         # Change root logger level from WARNING (default) to NOTSET in order for all messages to be delegated.
         logging.getLogger().setLevel(logging.NOTSET)
         
@@ -161,9 +163,9 @@ class SED(object):
         logging.getLogger().addHandler(rotatingHandler)
         
         self.log = logging.getLogger(__name__)
-        ### End Logging ###
+        # End Logging
 
-        ### Setup freq_pairs ###
+        # Setup frequency pairs file
         try:
             with open(misc_dir+pairs_file, 'rb') as pfile:
                 self.freq_pairs = pickle.load(pfile)
@@ -175,7 +177,7 @@ class SED(object):
             self.freq_pairs = { (f1*f2)**0.5:(f1,f2) for f1 in fpfs for f2 in fpfs }
             with open(misc_dir+pairs_file, 'wb') as pfile:
                 pickle.dump(self.freq_pairs, pfile)
-        ### End freq_pairs ###
+        # End freq_pairs
 
 
     def write_config(self, d):
@@ -188,7 +190,7 @@ class SED(object):
 
     def check_config(self, d):
         if not os.path.exists(d+'/sed.config'):
-            return None # No existing config means no conflicts, so just proceed
+            return None  # No existing config means no conflicts, so just proceed
 
         with open(d+'/sed.config', 'r') as cf:
             existing = dict( [tuple(s.split(' := ')) for s in cf.read().splitlines()] )
@@ -223,108 +225,132 @@ class SED(object):
 
         fs = self.fs_to_do
         do_recompute = self.recompute in ['spectra']
+
         if os.path.exists(self.spec_file) and not do_recompute:
-            self.log.info('Found existing spectra file at self.spec_file. Loading that.')
+            self.log.info('Found existing spectra file at %s. Loading that.', self.spec_file)
             with open(self.spec_file, 'rb') as pfile: 
                 return_spec = pickle.load(pfile)
 
         else:
-            for i in range(len(fs)):
-                self.log.info(str(fs[i])+' x others')
-                for j in range(i, i+len(fs[i:])):
-                    ins_str = ''
-                    
-                    mfile1 = self.map_dir+self.map_dict[fs[i]]
-                    mfile2 = self.map_dir+self.map_dict[fs[j]]
+            specs = {}
+            self.log.info('Computing spectra.')
+            
+            for ftd in self.fs_to_do:
+                f1, f2 = self.freq_pairs[ftd]
+                self.log.info('%s x %s', f1, f2)
 
-                    nfile1 = self.map_dir+self.map_dict[fs[i]]
-                    nfile2 = self.map_dir+self.map_dict[fs[j]]
+                ext1, ext2 = '', ''  # Clear filename extentions from previous loop
+                
+                mfile1 = self.map_dir+self.map_dict[f1]
+                mfile2 = self.map_dir+self.map_dict[f2]
+                
+                nfile1 = self.map_dir+self.map_dict[f1]
+                nfile2 = self.map_dir+self.map_dict[f2]
+                
+                if mfile1 == mfile2:
+                    ext1 = self.auto_suffixes[0]
+                    ext2 = self.auto_suffixes[1]
                     
-                    if mfile1 == mfile2:
-                        ext1 = self.auto_suffixes[0]
-                        ext2 = self.auto_suffixes[1]
-                        
-                    ellb, clsb, clse, freq = sl.cross_maps(self.mask, add_noise, mfile1, mfile2, 
-                                                           fs[i], fs[j], ext1, ext2, 
-                                                           noisefile1=nfile1, noisefile2=nfile2
-                                                       )
-                    ellb = [20.,45.,70.,95.,120.,145.,170.5]
-                    specs[freq] = [ellb, clsb, clse]
+                ellb, clsb, clse, freq = sl.cross_maps(self.mask, add_noise, mfile1, mfile2, 
+                                                       f1, f2, ext1, ext2, 
+                                                       noisefile1=nfile1, noisefile2=nfile2
+                                                   )
+                ellb = [20., 45., 70., 95., 120., 145., 170.]
+                specs[freq] = [ellb, clsb, clse]
                     
-                    freq_pairs[freq] = (fs[i], fs[j])
-                    fl_pairs[freq] = (flmap(fs[i]), flmap(fs[j]))
+            if self.spec_err_file is not None:
+                try:
+                    with open(self.spec_err_file, 'rb') as pfile:
+                        specs_err = pickle.load(pfile)
+                except:
+                    self.log.error('Failed to load Spectra Error file %s', self.spec_err_file)
+                    raise
 
-            if spec_err is not None:
-                with open(self.spec_err, 'rb') as pfile:
-                    spec_err = pickle.load(pfile)
-
-            for k in specs.keys():
-                specs[k] = [specs[k][0], specs[k][1], specs_err[k][2]]
+                for k in specs.keys():
+                    specs[k] = [specs[k][0], specs[k][1], specs_err[k][2]]
 
             return_spec = specs
+
+        self.log.info('Saving computed spectra to %s', self.spec_file)
+        with open(self.spec_file, 'wb') as pfile: 
+            pickle.dump(return_spec, pfile)
         
         return return_spec
 
 
-    def get_posteriors(self):
+    def get_posteriors(self, do_fl=True):
         
-        self.check_config(post_dir)
-        self.write_config(post_dir)
+        self.check_config(self.post_dir)
+        self.write_config(self.post_dir)
 
-        do_recompute = recompute in ['spectra', 'posteriors']
-        ep = ['dustxcmb_correlation'] if self.do_cxd else []
+        do_recompute = self.recompute in ['spectra', 'posteriors']
         
         if not do_recompute:
             try:
-                return_params = get_data(self.do_sim, custom_dir=self.post_dir, 
-                                         extra_params=ep, ells_to_do=map(str, self.ells))
-                self.log.info('Found existing posteriors in {}. Loading those.'.format(post_dir))
-            except IOError:
-                self.log.info('No posterior files found in {}; computing posteriors and saving to {}'.format(self.post_dir))
+                etd = list(map(str, self.ells))
+                return_params = sl.get_data(self.post_dir, ells_to_do=etd, pols_to_do=self.pols)
+                self.log.info('Found existing posteriors in %s. Loading those.', self.post_dir)
 
-                make_posteriors(self)
+            except FileNotFoundError:
+                self.log.info('No posterior files found in %s; computing posteriors and saving there',self.post_dir)
+                self.make_posteriors(do_fl)
+
                 try:
-                    return_params = get_data(self.do_sim, custom_dir=self.post_dir, 
-                                             extra_params=ep, ells_to_do=map(str, self.ells))
-                except IOError:
-                    self.log.error('Finding posterior files failed after computing posteriors, something probably went wrong in sed_fit.')
+                    return_params = sl.get_data(self.post_dir, ells_to_do=map(str, self.ells), pols_to_do=self.pols)
+
+                except (FileNotFoundError, IOError, EOFError):
+                    self.log.error('Loading posterior files failed after computing posteriors, something probably went wrong in sed_fit.')
                     raise
 
         else:
-            log.info('do_recompute={}, recomputing posteriors and saving to {}'.format(do_recompute, self.post_dir))
-            make_posteriors(self)
+            log.info('do_recompute=%s, recomputing posteriors and saving to %s',do_recompute, self.post_dir)
+            self.make_posteriors(do_fl)
+
             try:
-                return_params = get_data(self.do_sim, custom_dir=self.post_dir, 
-                                         extra_params=ep, ells_to_do=map(str, self.ells))
-            except IOError:
-                self.log.error('Finding posterior files failed after computing posteriors, something probably went wrong in sed_fit.')
+                return_params = sl.get_data(self.post_dir, ells_to_do=map(str, self.ells), pols_to_do=self.pols)
+
+            except (IOError, EOFError):
+                self.log.error('Loading posterior files failed after computing posteriors, something probably went wrong in sed_fit.')
                 raise
 
         return return_params
 
 
-        def make_posteriors(sed):
-            ells = sed.ells
-            pols = sed.pols
-            do_sim = sed.do_sim
-            model = sed.model
-            spec_file = sed.spec_file
-            post_dir = sed.post_dir
-            sopts = sed.sopts
+    def make_posteriors(self, do_fl):
+        
+        self.sopts['output'] = './slurm/output_log_sedfit'
+        self.sopts['error'] = './slurm/error_log_sedfit'
 
-            for ell in ells:
-                for pol in pols:
-                    sopts['name'] = name='sedfit_'+str(ell)+'_'+str(pol)
-                    sopts['output'] = './slurm/output_log_sed_{}_{}'.format(ell, pol)
-                    sopts['error'] = './slurm/error_log_sed_{}_{}'.format(ell, pol)
-            
-                    sa.batch.qsub('python ./sed_fit.py "{}" "{}" "{}" "{}"'.format(ell, pol. do_sim, model), 
-                                  name='sedfit_'+str(ell)+'_'+str(pol), **sopts)
-                    
-                    sed.log.info('Submitted sedfit_'+str(ell)+'_'+str(pol))
-            
-            # Watch slurm, don't proceed until all fit jobs are done.
-            while int(subprocess.check_output('squeue | grep sedfit | wc -l', shell=True)) > 0:
-                time.sleep(60)
+        elist = json.dumps(self.ells)
+        plist = json.dumps(self.pols)
 
-            return None
+        sa.batch.qsub('python ./sed_fit.py "{}" "{}" "{}" "{}" "{}" "{}" "{}"'.format(
+            self.do_sim, self.sed_model, self.spec_file, 
+            do_fl, elist, plist, self.post_dir
+        ), 
+                      name='sedfit', **self.sopts)
+                
+        self.log.info('Submitted sedfit job')
+                
+        # Watch slurm, don't proceed until all fit jobs are done.
+        while int(subprocess.check_output('squeue | grep sedfit | wc -l', shell=True)) > 0:
+            time.sleep(60)
+
+        return None
+
+
+def tofl(fls, pol, sbeam=(False, False)):
+    fl1, fl2 = fls
+    f = np.sqrt(sa.map.spider_fl(fl1, int(ell), int(ell))[pol][0]*sa.map.spider_fl(fl2, int(ell), int(ell))[pol][0])*hp.gauss_beam(np.radians(1), lmax=171)[int(ell)]**2
+    #f = hp.gauss_beam(np.radians(1), lmax=171)[int(ell)]**2
+    
+    fp1 = 1 if fl1 == 150 else 2
+    fp2 = 1 if fl2 == 150 else 2
+
+    sb = 1.
+    if sbeam[0]:
+        sb *= sa.map.spider_beam(fp1, 171)[int(ell)]
+    if sbeam[1]:
+        sb *= sa.map.spider_beam(fp2, 171)[int(ell)]
+
+    return f*sb
