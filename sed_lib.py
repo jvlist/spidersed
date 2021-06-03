@@ -9,66 +9,12 @@ import spider_analysis as sa
 import healpy as hp
 import scipy.stats
 import copy
-import random
+from numpy import random
 import math
 from contextlib import contextmanager
 import sys
 
 pickledir = '/mnt/spider2/jvlist/pickles/'
-
-def calc_spec(As, bs, Ad, bd, Ac, start, end, rho, pairs, samples=None, manual_samples=False, component=None):
-    '''
-    Calculate a frequency spectrum with power law dust and synchrotron, and flat CMB.
-
-    Take first 5 arguments as params, where the spectrum is A_sync*(nu_s/nu_s0)^b_s + A_dust*(nu_d/nu_d0)^b_d + A_cmb.
-
-    component is a list of things to include; 'dust', 'cmb', 'sync', 'correlation' are allowed. None returns all components.
-    '''
-
-    T_dust = 19.6
-    T_cmb = 2.7
-
-    pf = 1e20 #unit prefactor, convert to MJy
-
-    for arg in [As, bs, Ad, bd, Ac, start, end]:
-        try:
-            arg = float(arg)
-        except ValueError:
-            print('Type Error: non-numerical value')
-            raise
-
-    if manual_samples:
-        pass
-    else:
-        samples = np.linspace(start, end, 50)
-
-    vals = []
-    for f in samples:
-        nu_1, nu_2 = pairs[f][0]*1.e9, pairs[f][1]*1.e9
-
-        convert = (pf*planck_bb(nu_1, T_cmb, deriv=True)*pf*planck_bb(nu_2, T_cmb, deriv=True))**-1
-        g_1, g_2 = planck_bb(nu_1, T_dust)/planck_bb(353.e9, T_dust), planck_bb(nu_2, T_dust)/planck_bb(353.e9, T_dust)
-
-        cxc = Ac**2 * pf*planck_bb(nu_1, T_cmb, deriv=True)*pf*planck_bb(nu_2, T_cmb, deriv=True)
-        dxd = Ad**2 * (nu_1*nu_2/353.e9**2)**bd * g_1*g_2
-        sxs = As**2 * (nu_1*nu_2/23.e9**2)**bs
-        sxd = rho*As*Ad *( (nu_1/23.e9)**bs*(nu_2/353.e9)**bd*g_2 + (nu_2/23.e9)**bs*(nu_1/353.e9)**bd*g_1 )
-
-        if component != None:
-            if not 'dust' in component:
-                dxd = 0
-            if not 'cmb' in component:
-                cxc = 0
-            if not 'sync' in component:
-                sxs = 0
-            if not 'correlation' in component:
-                sxd = 0
-
-        vals.append(convert*(cxc+dxd+sxs+sxd))
-
-
-    return vals, samples
-
 
 
 def calc_spec_cxd(As, bs, Ad, bd, Ac, start, end, rho, delta, pairs, samples=None, manual_samples=False, component=None, grad=False):
@@ -264,41 +210,6 @@ def make_spectrum_harmonic(traces, start, end, pairs, ell, pol, samples=None, ma
     return np.array(vals), np.array(samples), np.array(params)
 
 
-
-
-def realize_fit(samples, pairs, traces, labels=[], bounds={}, view_dists=False, title_prefix='', component=None):
-
-    for datname in bounds.keys():
-        ind = np.where(np.array(labels) == datname)[0][0]
-        keep = np.where(np.logical_and(traces[ind] > bounds[datname][0], traces[ind] < bounds[datname][1]))
-        if np.any(keep):
-            traces = [d[keep] for d in traces]
-
-    errs = np.array([])
-    for i in range(1000):
-        vals, sams, params = make_spectrum(traces, 0, 0, pairs, samples=samples, manual_samples=True, component=component)
-        if errs.any():
-            errs = np.vstack((errs, vals))
-        else:
-            errs = vals
-
-    if view_dists:
-        for i in range(len(errs[0])):
-            plt.title(title_prefix+str(samples[i]))
-            plt.xlabel('D_l')
-            plt.ylabel('hits')
-            plt.hist(trim_trace(errs[:,i]), bins='fd')
-            plt.axvline(x=np.nanmedian(errs[:,i]), c='k', ls='-')
-            err_p, err_m = two_sided_std(trim_trace(errs[:,i]))
-            plt.axvline(x=np.nanmedian(errs[:,i])+err_p, c='k', ls='--')
-            plt.axvline(x=np.nanmedian(errs[:,i])-err_m, c='k', ls='--')
-            plt.show()
-            plt.close()
-
-    return np.nanmedian(errs, axis=0), np.array([two_sided_std(errs[:,i]) for i in range(len(errs[0,:]))])
-
-
-
 def realize_fit_cxd(samples, pairs, traces, labels=[], bounds={}, view_dists=False, save_dists=False, title_prefix='', 
                     component=None, do_confidence=False, get_shape=False, percent=True, mle=False, around_ml=False, require_positive=True):
 
@@ -327,7 +238,7 @@ def realize_fit_cxd(samples, pairs, traces, labels=[], bounds={}, view_dists=Fal
     errs = np.array([])
     weights = np.array([])
     # pick 5000 random sample indices
-    ind_draws = random.sample(np.arange(len(traces[0])), 5000)
+    ind_draws = random.choice(len(traces[0]), 5000)
 
     for i in ind_draws:
         vals, sams, params = make_spectrum_cxd(traces[:,i], 0, 0, pairs, samples=samples, manual_samples=True, component=component)
@@ -416,54 +327,6 @@ def realize_fit_harmonic(samples, pairs, traces, ell, pol, labels=[], bounds={},
             errs = vals
 
     return np.nanmedian(errs, axis=0), np.array([two_sided_std(errs[:,i]) for i in range(len(errs[0,:]))])
-
-
-
-def assess_spider_points(samples, pairs, traces, spectrum_vals, spectrum_errs):
-
-    synch_ins = 0
-    nosynch_ins = 0
-
-    errs = np.array([])
-    for i in range(10000):
-        vals, sams, params = make_spectrum(traces, 0, 0, pairs, samples=samples, manual_samples=True)
-        if errs.any():
-            errs = np.vstack((errs, vals))
-        else:
-            errs = vals
-    synch_mean = np.nanmean(errs, axis=0)
-
-
-    for i in range(10000):
-        vals, sams, params = make_spectrum(traces, 0, 0, pairs, samples=samples, manual_samples=True)
-        for point in [np.where(sams==94.0)[0],np.where(sams==150.0)[0],np.where(sams==(94.0*150.0)**0.5)[0]]:
-            if (vals[point] - synch_mean[point]) > (spectrum_vals[point] - synch_mean[point]):
-                synch_ins += 1
-
-    traces2 = traces[:]
-    traces2[0] = traces2[0]-np.mean(traces2[0])
-    traces2[1] = traces2[1]-np.mean(traces2[1])
-
-    errs = np.array([])
-    for i in range(10000):
-        vals, sams, params = make_spectrum(traces2, 0, 0, pairs, samples=samples, manual_samples=True)
-        if errs.any():
-            errs = np.vstack((errs, vals))
-        else:
-            errs = vals
-    nosynch_mean = np.nanmean(errs, axis=0)
-
-
-    for i in range(10000):
-        vals, sams, params = make_spectrum(traces2, 0, 0, pairs, samples=samples, manual_samples=True)
-        for point in [np.where(sams==94.0)[0],np.where(sams==150.0)[0],np.where(sams==(94.0*150.0)**0.5)[0]]:
-            if abs(vals[point] - nosynch_mean[point]) > abs(spectrum_vals[point] - nosynch_mean[point]):
-                nosynch_ins += 1
-
-
-    print("PTE with synchrotrons: {} \nPTE without synchrotrons: {}".format(synch_ins/30000.,nosynch_ins/30000.))
-
-    return (synch_ins/30000.,nosynch_ins/30000.)
 
 
 def calc_components(samples, pairs, traces):
@@ -578,40 +441,6 @@ def make_color(col_str):
 
     return '#' + s
 
-def compare_chains(M, num_chains):
-
-    for i in range(num_chains):
-        t_a_sync = M.trace('synchrotron_amplitude', chain=i)[:]
-        t_b_sync = M.trace('synchrotron_beta', chain=i)[:]
-        t_a_dust = M.trace('dust_amplitude', chain=i)[:]
-        t_b_dust = M.trace('dust_beta', chain=i)[:]
-        t_a_cmb = M.trace('cmb_amplitude', chain=i)[:]
-        t_rho = M.trace('correlation_coefficient', chain=i)[:]
-
-        ms = np.array([np.mean(t_a_sync),np.mean(t_b_sync),np.mean(t_a_dust),np.mean(t_b_dust),np.mean(t_a_cmb),np.mean(t_rho)])
-        vs = np.array([np.std(t_a_sync),np.std(t_b_sync),np.std(t_a_dust),np.std(t_b_dust),np.std(t_a_cmb),np.std(t_rho)])
-
-        print("Chain {}".format(i))
-        print(ms)
-        print(vs)
-
-    print('\n')
-
-    return True
-
-def remove_disparate(dls, errs, freqs, pairs):
-    for i in range(len(freqs)):
-        if abs(pairs[freqs[i]][0]-pairs[freqs[i]][1]) > 250:
-            dls[i] = np.nan
-            errs[i] = np.nan
-            freqs[i] = np.nan
-
-    dls = dls[~np.isnan(dls)]
-    errs = errs[~np.isnan(errs)]
-    freqs = freqs[~np.isnan(freqs)]
-
-    return dls, errs, freqs, pairs
-
 
 def trim_trace(t):
     cut = 0.05
@@ -657,25 +486,6 @@ def planck_bb(f, T, deriv=False):
     else:
         return (2*h**2*f**4)/(c**2*k*T**2) * np.exp((h*f)/(k*T))/(np.exp((h*f)/(k*T))-1)**2
 
-def correct_units(val, freq, bd, bs):
-
-    '''
-    fix units in D_l space for calibration off cmb. deprecated and can probably be removed.
-    '''
-    gfreq  = freq*1.e9
-    factor = 1.
-    T_dust = 19.6
-    T_cmb = 2.7
-
-    for i in [0,1]:
-        map_freq = freq_pairs[freq][i]*1.e9
-
-        dust_factor = ((map_freq/353.e9)**bd*planck_bb(map_freq, T_dust)/planck_bb(353.e9, T_dust))/planck_bb(map_freq, T_cmb, deriv=True)*(planck_bb(353.e9, T_cmb, deriv=True))
-        sync_factor = (map_freq/23.e9)**bs
-
-        factor *= (dust_factor + sync_factor)
-
-    return val*factor
 
 def get_data(d, ells_to_do=['20.0', '45.0', '70.0', '95.0', '120.0', '145.0', '170.0'], pols_to_do=['EE','BB','EB']):
     traces = {ell:{pol:None for pol in pols_to_do} for ell in ells_to_do}
@@ -1080,6 +890,7 @@ def transfer_correct(s, i, f):
         mul0 = np.matmul(themat, np.transpose(s_0))
         return np.subtract(mul0, mul)
 
+
 def do_transfer(spec, f):
     new = copy.deepcopy(spec)
     d0 = transfer_correct(new, 0, f)
@@ -1097,12 +908,14 @@ def do_transfer(spec, f):
 
     return new
 
+
 def do_all_transfer_mats(specs, fl_pairs):
     new = {}
     for k in specs.keys():
         new[k] = do_transfer(specs[k], fl_pairs[k])
 
     return new
+
 
 def dl_to_amp(dl, params, f, pairs, component='dust'):
     '''
@@ -1135,6 +948,7 @@ def dl_to_amp(dl, params, f, pairs, component='dust'):
         amp = dl**0.5
 
     return amp
+
 
 def narrowest_percent(dat, ml, fraction=0.68, require_positive=True, weights=None):
 
@@ -1191,6 +1005,7 @@ def narrowest_percent(dat, ml, fraction=0.68, require_positive=True, weights=Non
         detect = False
 
     return (bot, top), detect
+
 
 def weights_by_param(params, freq, freq_pairs, component=None):
     As, bs, Ad, bd, Ac, rho, delta = params
@@ -1258,6 +1073,7 @@ def cross_maps(mask, add_noise, mapfile1, mapfile2, freq1, freq2, ext1, ext2, no
     freq = (freq1*freq2)**0.5
     return None, clsb, clse, freq
 
+
 def grad_wrap(f):
     '''
     An evil function to avoid math errors in calc_spec_cxd gradient option.
@@ -1266,6 +1082,7 @@ def grad_wrap(f):
         return f
     except (ZeroDivisionError, ValueError):
         return None
+
 
 @contextmanager
 def add_prefix(prefix): 

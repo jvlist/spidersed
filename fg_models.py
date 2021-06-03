@@ -9,15 +9,14 @@ from sed_lib import calc_spec_cxd
 #theano.config.exception_verbosity='high'
 #theano.config.optimizer='None'
 
-def init(sed_model, data, errors, freqs, freq_pairs, do_sim):
-
+def init(sed_model, data, errors, ac, map_coll, do_sim):
     '''
     Initialize the MCMC model of your choice. 
 
     Arguments:
     sed_model: name of the model you want. Currently supports only 'dustxcmb'
     data: 1-D array of data points. Make sure data, errors, and freqs are the same order!
-    data: 1-D array of error bars or 2-D covariance. Make sure data, errors, and freqs are the same order! Using a full covariance hasn't been tested, but should just work?
+    errors: 1-D array of error bars or 2-D covariance. Make sure data, errors, and freqs are the same order! Using a full covariance hasn't been tested, but should just work?
     freqs: array of data points. Make sure data, errors, and freqs are the same order!
     freq_pairs: dictionary mapping sqrt(nu1*nu2) frequencies to (nu1, nu2)
     do_sim: Whether this is a simulation run. Sims and data might have different priors.
@@ -56,7 +55,10 @@ def init(sed_model, data, errors, freqs, freq_pairs, do_sim):
     with model:  # With the model in the context stack, you can add variables just by calling the class
         
         chosen_model = modeldict.get(sed_model, no_model)
-        calcs = chosen_model(freqs, freq_pairs)
+
+        freqs = [map_coll.cross_freq(m1,m2) for m1, m2 in ac]
+        pairs = {map_coll.cross_freq(m1,m2):(map_coll.freq(m1),map_coll.freq(m2)) for m1, m2 in ac}
+        calcs = chosen_model(freqs, pairs)
 
         powers = calcs(a_sync, b_sync, a_dust, b_dust, a_cmb, corr_coeff, dxc_corr)  
         # Wrapping powers in pymc.Deterministic would save the MCMC trace of the bandpowers, but also slows plotting etc down because that's a lot of extra points (75 bps vs 7 parameters)
@@ -80,15 +82,16 @@ def init(sed_model, data, errors, freqs, freq_pairs, do_sim):
 
 #Dust x CMB model
 class PowersDxC(Op):
-    def __init__(self, freqs, freq_pairs):
+    def __init__(self, freqs, pairs):
         self.freqs = freqs
-        self.pairs = freq_pairs
+        self.pairs = pairs
 
     itypes = [tt.dscalar, tt.dscalar, tt.dscalar, tt.dscalar, tt.dscalar, tt.dscalar, tt.dscalar] #64bit float per param
     otypes = [tt.dvector] #one 75-length float array for bandpowers
     
     def perform(self, node, inputs, outputs):
         As, bs, Ad, bd, Ac, rho, delta = inputs
+
         vals, _ = calc_spec_cxd(As, bs, Ad, bd, Ac, 0, 0, rho, delta, self.pairs, samples=self.freqs, manual_samples=True)
         outputs[0][0] = np.array(vals)
         #Don't return anything because theano is tricksy and does in-place memory things with the outputs arg

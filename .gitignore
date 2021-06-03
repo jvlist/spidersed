@@ -2,3 +2,5 @@
 sed.log
 __pycache__/*
 sed.config
+slurm/*
+sed_plots/*

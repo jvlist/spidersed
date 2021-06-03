@@ -1,4 +1,4 @@
-import pymc3
+import pymc3 as pymc
 import numpy as np
 import fg_models
 import pickle
@@ -6,20 +6,10 @@ import sys
 from sed_lib import *
 from mpi4py import MPI
 import json
-
-_, do_sim, model_name, spec_file, pairs_file, fl_file, ells, pols, post_dir = sys.argv
-do_sim = do_sim == 'True'
-ells = json.loads(ells)
-pols = json.loads(pols)
-
-# Initialize MPI
-comm = MPI.COMM_WORLD
-size = comm.Get_size()
-rank = comm.Get_rank()
+from sed_base import MapCollection
 
 
-
-def sed_ravel(specs, ells, pols):
+def sed_ravel(specs, ells, pols, fl=None, map_coll=None):
     '''
     Reorganize the specs dictionary into lists that MPI can scatter to parallel processes for pymc.
     '''
@@ -27,6 +17,15 @@ def sed_ravel(specs, ells, pols):
     
     blist = []
     slist = []
+    
+    ac = map_coll.all_crosses()
+       #fs = np.array([map_coll.cross_freq(m1,m2) for m1, m2 in ac])
+       #fs.sort()
+
+
+    if fl != 'None':
+        with open(fl, 'rb') as pfile:
+            flf = pickle.load(pfile)
     
     for i, l in enumerate(ells):
         for j, p in enumerate(pols):
@@ -37,9 +36,17 @@ def sed_ravel(specs, ells, pols):
                 raise LookupError('One of the ells_to_do ({}) was not in the list of ells from estimate_spectrum.'.format(l))
             
             polind = polmap[p]
-            vals = [specs[f][1][polind][ellind] for f in fs]
-            errs = [specs[f][2][polind][ellind] for f in fs]
+            vals = [specs[(m1,m2)][1][polind][ellind] for (m1,m2) in ac]
+            errs = [specs[(m1,m2)][2][polind][ellind] for (m1,m2) in ac]
 
+            if fl != 'None':
+
+                flv = [flf[(m1,m2)][1][polind][ellind] for (m1,m2) in ac]
+                fle = [flf[(m1,m2)][2][polind][ellind] for (m1,m2) in ac]
+
+                vals = list(np.divide(vals, flv))
+                errs = list(np.divide(errs, fle))
+            
             blist.append( (l,p) )
             slist.append( (vals, errs) )
 
@@ -48,48 +55,74 @@ def sed_ravel(specs, ells, pols):
 def file_write(ell, pol, trace, write_dir):
     wname = write_dir + '/' + '{}_{}_trace.p'.format(ell, pol)
     with open(wname, 'wb') as pfile:
-        pickledump(trace, wname)
+        pickle.dump(trace, pfile)
     
 
-# Grab data in the root process
-if rank == 0:
-    with open(pairs_file, 'rb') as pfile: 
-        freq_pairs = pickle.load(pfile)
+if __name__ == '__main__':
+    _, do_sim, model_name, spec_file, map_coll, fl_file, ells, pols, post_dir = sys.argv
+    do_sim = do_sim == 'True'
+    ells = json.loads(ells)
+    pols = json.loads(pols)
+    map_coll = MapCollection(json.loads(map_coll))
 
-    with open(spec_file, 'rb') as pfile:
-        specs = pickle.load(pfile)
 
-    if fl_file != 'None':
-        with open(fl_file, 'rb') as pfile: 
-            fls = pickle.load(pfile)
+    # Initialize MPI
+    comm = MPI.COMM_WORLD
+    size = comm.Get_size()
+    rank = comm.Get_rank()
 
-    fs = np.array(list(specs.keys()), dtype=float)
-    fs.sort()
 
-    blist, slist = sed_ravel(specs, ells, pols)
-    assert size == len(blist), 'Number of MPI processes should be len(ells)*len(pols)'
-else:
-    freq_pairs, fs = None, None
-    blist, slist = None, None
+    # Grab data in the root process
+    if rank == 0:
+        #with open(pairs_file, 'rb') as pfile: 
+        #   freq_pairs = pickle.load(pfile)
+
+        with open(spec_file, 'rb') as pfile:
+            specs = pickle.load(pfile)
+
+        if fl_file != 'None':
+            with open(fl_file, 'rb') as pfile: 
+                fls = pickle.load(pfile)
+
+        ac = map_coll.all_crosses()
+        #fs = np.array([map_coll.cross_freq(m1,m2) for m1, m2 in ac])
+        #fs.sort()
+
+        blist, slist = sed_ravel(specs, ells, pols, fl=fl_file, map_coll=map_coll)
+        if size != len(blist):
+            raise ValueError('Number of MPI processes should be len(ells)*len(pols)')
+
+    else:
+        #freq_pairs, fs = None, None
+        map_coll, ac = None, None
+        blist, slist = None, None
     
 
-# Process Communication 
-bs = comm.scatter(blist, root=0)  # One ell,pol bin per process
-ss = comm.scatter(slist, root=0)
+    # Process Communication 
+    bs = comm.scatter(blist, root=0)  # One ell,pol bin per process
+    ss = comm.scatter(slist, root=0)
+    
+    #freq_pairs = comm.bcast(freq_pairs, root=0)  # Everybody needs freq_pairs and fs
+    #fs = comm.bcast(fs, root=0)
+    map_coll = comm.bcast(map_coll, root=0)  # Everybody needs freq_pairs and fs
+    ac = comm.bcast(ac, root=0)
+    
 
-freq_pairs = comm.bcast(freq_pairs, root=0)  # Everybody needs freq_pairs and fs
-fs = comm.bcast(fs, root=0)
+    with add_prefix(f'Process #{rank}'):
+        dat, err = ss
+        ell, pol = bs
+        print('Initializing model.')
+        #model = fg_models.init('dustxcmb', dat, err, fs, freq_pairs, do_sim)
+        model = fg_models.init('dustxcmb', dat, err, ac, map_coll, do_sim)
 
-
-with add_prefix(f'Process #{rank}'):
-    dat, err = ss
-    ell, pol = bs
-    print('Initializing model.')
-    model = fg_models.init('dustxcmb', dat, err, fs, freq_pairs, do_sim)
-
-    with model:  # pymc3 wants the model object in the context stack when running things
-        # Gradient based step methods are currently bugged, so use Metropolis-Hastings for now. 
-        # Also, don't try to split into multiple processes, because it probably won't help given MPI is around
-        trace = pymc.sample(5000, tune=1000, step=pymc.Metropolis(), cores=1, progresbar=False, return_inferencedata=False)
-        
-        file_write(ell, pol, trace, post_dir)
+        with model:  # pymc3 wants the model object in the context stack when running things
+            # Gradient based step methods are currently bugged, so use Metropolis-Hastings for now. 
+            # Also, don't try to split into multiple processes, because it probably won't help given MPI is around
+            print('Sampling with model.')
+            if rank != 0:
+                trace = pymc.sample(5000, tune=1000, step=pymc.Metropolis(), cores=1, progressbar=False, return_inferencedata=False)
+            else:
+                trace = pymc.sample(5000, tune=1000, step=pymc.Metropolis(), cores=1, progressbar=True, return_inferencedata=False)
+            
+            file_write(ell, pol, trace, post_dir)
+#python ./sed_fit.py False dustxcmb /projects/WCJONES/spider/jvlist/specs/SED_leakage_subtract.p '{"map_wmap_k": [23.0, ["a"]], "map_wmap_ka": [30.0, ["a"]], "map_wmap_q": [40.0, ["a"]], "map_wmap_v": [60.0, ["a"]], "map_wmap_w": [90.0, ["a"]], "map_spider_90": [94.5, ["a", "-auto"]], "map_spider_90_0": [94.5, ["b", "-auto"]], "map_spider_90_1": [94.5, ["b", "-auto"]], "map_spider_90_2": [94.5, ["b", "-auto"]], "map_spider_90_3": [94.5, ["b", "-auto"]], "map_planck_100": [101.3, ["a"]], "map_planck_143": [141.9, ["a"]],"map_spider_150a": [150.5, ["a", "-auto"]], "map_spider_150a_0": [150.5, ["c", "-auto"]], "map_spider_150a_1": [150.5, ["c", "-auto"]], "map_spider_150a_2": [150.5, ["c", "-auto"]], "map_spider_150a_3": [150.5, ["c", "-auto"]], "map_planck_217": [220.6, ["a"]], "map_planck_353": [359.7, ["a"]]}' /projects/WCJONES/spider/jvlist/SED_misc//sed_fls.p '[20.0, 45.0, 70.0, 95.0, 120.0, 145.0, 170.0]' '["EE", "BB"]' /scratch/gpfs/jvlist/posteriors_leakage_subtract/
