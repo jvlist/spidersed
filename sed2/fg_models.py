@@ -4,7 +4,7 @@ import pickle
 import theano
 import theano.tensor as tt
 from theano.graph.op import Op
-from sed_lib import calc_spec_cxd
+from sed2.lib import calc_spec_cxd
 
 #theano.config.exception_verbosity='high'
 #theano.config.optimizer='None'

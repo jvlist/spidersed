@@ -1,12 +1,12 @@
 import pymc3 as pymc
 import numpy as np
-import fg_models
+import sed2.fg_models
 import pickle
 import sys
-from sed_lib import *
+from sed2.lib import *
 from mpi4py import MPI
 import json
-from sed_base import MapCollection
+from sed2.base import MapCollection
 
 
 def sed_ravel(specs, ells, pols, fl=None, map_coll=None):
@@ -112,8 +112,7 @@ if __name__ == '__main__':
         dat, err = ss
         ell, pol = bs
         print('Initializing model.')
-        #model = fg_models.init('dustxcmb', dat, err, fs, freq_pairs, do_sim)
-        model = fg_models.init('dustxcmb', dat, err, ac, map_coll, do_sim)
+        model = sed2.fg_models.init('dustxcmb', dat, err, ac, map_coll, do_sim)
 
         with model:  # pymc3 wants the model object in the context stack when running things
             # Gradient based step methods are currently bugged, so use Metropolis-Hastings for now. 
@@ -125,4 +124,3 @@ if __name__ == '__main__':
                 trace = pymc.sample(5000, tune=1000, step=pymc.Metropolis(), cores=1, progressbar=True, return_inferencedata=False)
             
             file_write(ell, pol, trace, post_dir)
-#python ./sed_fit.py False dustxcmb /projects/WCJONES/spider/jvlist/specs/SED_leakage_subtract.p '{"map_wmap_k": [23.0, ["a"]], "map_wmap_ka": [30.0, ["a"]], "map_wmap_q": [40.0, ["a"]], "map_wmap_v": [60.0, ["a"]], "map_wmap_w": [90.0, ["a"]], "map_spider_90": [94.5, ["a", "-auto"]], "map_spider_90_0": [94.5, ["b", "-auto"]], "map_spider_90_1": [94.5, ["b", "-auto"]], "map_spider_90_2": [94.5, ["b", "-auto"]], "map_spider_90_3": [94.5, ["b", "-auto"]], "map_planck_100": [101.3, ["a"]], "map_planck_143": [141.9, ["a"]],"map_spider_150a": [150.5, ["a", "-auto"]], "map_spider_150a_0": [150.5, ["c", "-auto"]], "map_spider_150a_1": [150.5, ["c", "-auto"]], "map_spider_150a_2": [150.5, ["c", "-auto"]], "map_spider_150a_3": [150.5, ["c", "-auto"]], "map_planck_217": [220.6, ["a"]], "map_planck_353": [359.7, ["a"]]}' /projects/WCJONES/spider/jvlist/SED_misc//sed_fls.p '[20.0, 45.0, 70.0, 95.0, 120.0, 145.0, 170.0]' '["EE", "BB"]' /scratch/gpfs/jvlist/posteriors_leakage_subtract/

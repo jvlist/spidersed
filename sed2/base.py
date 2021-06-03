@@ -1,12 +1,12 @@
 import numpy as np
 import pickle
-import sed_lib as sl
+import sed2.lib as sl
 import time
 import sys
 import subprocess
 import logging
 import logging.handlers
-import os.path
+import os
 import spider_analysis as sa
 import json
 import healpy as hp
@@ -515,8 +515,8 @@ class SED(object):
         self.sopts['error'] = './slurm/error_log_sedfit'
 
         procs = len(self.ells)*len(self.pols) # One process per ell, pol bin
-        nodes = 1 + needed_procs // 40 # One node for every 40 processes
-        ppn = ceil(needed_procs / needed_nodes) # Split jobs evenly across nodes
+        nodes = 1 + procs // 40 # One node for every 40 processes
+        ppn = ceil(procs / nodes) # Split jobs evenly across nodes
 
         self.sopts['ppn']=ppn
         self.sopts['mpi_procs']=procs
@@ -530,7 +530,9 @@ class SED(object):
         else:
             ff = None
 
-        sa.batch.qsub("python ./sed_fit.py '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}'".format(
+        fpath = os.path.join(os.getenv('SED2_DIR'), 'fitter.py')
+            
+        sa.batch.qsub("python "+fpath+" '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}'".format(
             self.do_sim, self.sed_model, self.spec_file, 
             mc, ff, elist, plist, self.post_dir
         ), 

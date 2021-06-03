@@ -1,12 +1,12 @@
-from sed_base import SED
+from .base import SED
 import pymc3 as pymc
 import arviz as az
 import matplotlib
 import matplotlib.pyplot as plt
 import os
 import numpy as np
-from sed_fit import sed_ravel
-from sed_lib import realize_fit_cxd
+from .fitter import sed_ravel
+from .lib import realize_fit_cxd
 import scipy
 
 
