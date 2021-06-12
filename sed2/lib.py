@@ -51,9 +51,9 @@ def calc_spec_cxd(As, bs, Ad, bd, Ac, start, end, rho, delta, pairs, samples=Non
         convert = (pf*planck_bb(nu_1, T_cmb, deriv=True)*pf*planck_bb(nu_2, T_cmb, deriv=True))**-1
         g_1, g_2 = planck_bb(nu_1, T_dust)/planck_bb(353.e9, T_dust), planck_bb(nu_2, T_dust)/planck_bb(353.e9, T_dust)
 
-        cxc = Ac**2 * pf*planck_bb(nu_1, T_cmb, deriv=True)*pf*planck_bb(nu_2, T_cmb, deriv=True)
-        dxd = Ad**2 * (nu_1*nu_2/353.e9**2)**bd * g_1*g_2
-        sxs = As**2 * (nu_1*nu_2/23.e9**2)**bs
+        cxc = np.sign(Ac)*Ac**2 * pf*planck_bb(nu_1, T_cmb, deriv=True)*pf*planck_bb(nu_2, T_cmb, deriv=True)
+        dxd = np.sign(Ad)*Ad**2 * (nu_1*nu_2/353.e9**2)**bd * g_1*g_2
+        sxs = np.sign(As)*As**2 * (nu_1*nu_2/23.e9**2)**bs
 
         sxd = rho*As*Ad *( (nu_1/23.e9)**bs*(nu_2/353.e9)**bd*g_2 \
                            + (nu_2/23.e9)**bs*(nu_1/353.e9)**bd*g_1 )
@@ -982,6 +982,9 @@ def narrowest_percent(dat, ml, fraction=0.68, require_positive=True, weights=Non
         keep = [max(np.searchsorted(bins, ml)-1, 0)] #start with ml bin
     else:
         keep = [np.searchsorted(bins, ml)-1]
+
+    if keep == [200]:
+        keep = [199] # Bin edges break keep when ml is very high
 
     while np.sum(ps[keep]) < fraction:
 
