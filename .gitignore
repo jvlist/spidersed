@@ -6,3 +6,4 @@ sed2/slurm/*
 sed2/sed_plots/*
 sed2/scripts/*
 *.pyc
+sedfit.q*

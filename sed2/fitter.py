@@ -59,7 +59,7 @@ def file_write(ell, pol, trace, write_dir):
     
 
 if __name__ == '__main__':
-    _, do_sim, model_name, spec_file, map_coll, fl_file, ells, pols, post_dir = sys.argv
+    _, do_sim, model_name, spec_file, map_coll, fl_file, ells, pols, post_dir, step = sys.argv
     do_sim = do_sim == 'True'
     ells = json.loads(ells)
     pols = json.loads(pols)
@@ -118,9 +118,11 @@ if __name__ == '__main__':
             # Gradient based step methods are currently bugged, so use Metropolis-Hastings for now. 
             # Also, don't try to split into multiple processes, because it probably won't help given MPI is around
             print('Sampling with model.')
-            if rank != 0:
-                trace = pymc.sample(5000, tune=1000, step=pymc.Metropolis(), cores=1, progressbar=False, return_inferencedata=False)
+            if step == 'metropolis':
+                trace = pymc.sample(10000, tune=1000, step=pymc.Metropolis(), cores=1, progressbar=False, return_inferencedata=False)
+            elif step == 'None':
+                trace = pymc.sample(10000, tune=1000, cores=1, progressbar=False, return_inferencedata=False)
             else:
-                trace = pymc.sample(5000, tune=1000, step=pymc.Metropolis(), cores=1, progressbar=True, return_inferencedata=False)
+                raise NameError('Unknown step method.')
             
             file_write(ell, pol, trace, post_dir)

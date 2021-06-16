@@ -509,7 +509,7 @@ class SED(object):
         return return_params
 
 
-    def make_posteriors(self, fl_file=None, manual_slurm=False):
+    def make_posteriors(self, fl_file=None, manual_slurm=False, step=None):
         
         self.sopts['output'] = './slurm/output_log_sedfit'
         self.sopts['error'] = './slurm/error_log_sedfit'
@@ -532,9 +532,9 @@ class SED(object):
 
         fpath = os.path.join(os.getenv('SED2_DIR'), 'fitter.py')
             
-        sa.batch.qsub("python "+fpath+" '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}'".format(
+        sa.batch.qsub("python "+fpath+" '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}'".format(
             self.do_sim, self.sed_model, self.spec_file, 
-            mc, ff, elist, plist, self.post_dir
+            mc, ff, elist, plist, self.post_dir, step
         ), 
                       name='sedfit', **self.sopts)
                 

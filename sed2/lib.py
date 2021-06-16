@@ -45,8 +45,10 @@ def calc_spec_cxd(As, bs, Ad, bd, Ac, start, end, rho, delta, pairs, samples=Non
 
     vals = []
     grads = []
-    for f in samples:
-        nu_1, nu_2 = pairs[f][0]*1.e9, pairs[f][1]*1.e9
+    for (nu_1, nu_2) in samples:
+        #nu_1, nu_2 = pairs[f][0]*1.e9, pairs[f][1]*1.e9
+        nu_1 *= 1.e9
+        nu_2 *= 1.e9
 
         convert = (pf*planck_bb(nu_1, T_cmb, deriv=True)*pf*planck_bb(nu_2, T_cmb, deriv=True))**-1
         g_1, g_2 = planck_bb(nu_1, T_dust)/planck_bb(353.e9, T_dust), planck_bb(nu_2, T_dust)/planck_bb(353.e9, T_dust)
@@ -120,8 +122,108 @@ def calc_spec_cxd(As, bs, Ad, bd, Ac, start, end, rho, delta, pairs, samples=Non
             grads.append(np.nan_to_num(convert*np.array([g_As, g_bs, g_Ad, g_bd, g_Ac, g_rho, g_delta])))
 
     if grad:
-        #grads = [np.array([gs[i][j] for i in range(len(gs))]) for j in range(len(gs[0]))] #Theano specifically wants a *list* of 1-d arrays, so np.transpose is no good
-        return grads, samples
+        return np.array(grads), samples  # Return the Jacobian of powers wrt params
+    else:
+        return vals, samples
+
+
+
+def calc_spec_vec(params, samples, component=None, grad=False):
+    '''
+    Calculate a frequency spectrum with power law dust and synchrotron, and flat CMB. Includes dust x cmb correlation.
+
+    Take first 5 arguments as params, where the spectrum is A_sync*(nu_s/nu_s0)^b_s + A_dust*(nu_d/nu_d0)^b_d + A_cmb.
+
+    component is a list of things to include; 'dust', 'cmb', 'sync', 'rho', 'delta' are allowed. None returns all components.
+    '''
+
+    As, bs, Ad, bd, Ac, rho, delta = params
+
+
+    T_dust = 19.6
+    T_cmb = 2.7
+
+    pf = 1e20 #unit prefactor, convert to MJy
+
+    vals = []
+    grads = []
+    for (nu_1, nu_2) in samples:
+        nu_1 *= 1.e9
+        nu_2 *= 1.e9
+
+        convert = (pf*planck_bb(nu_1, T_cmb, deriv=True)*pf*planck_bb(nu_2, T_cmb, deriv=True))**-1
+        g_1, g_2 = planck_bb(nu_1, T_dust)/planck_bb(353.e9, T_dust), planck_bb(nu_2, T_dust)/planck_bb(353.e9, T_dust)
+
+        cxc = np.sign(Ac)*Ac**2 * pf*planck_bb(nu_1, T_cmb, deriv=True)*pf*planck_bb(nu_2, T_cmb, deriv=True)
+        dxd = np.sign(Ad)*Ad**2 * (nu_1*nu_2/353.e9**2)**bd * g_1*g_2
+        sxs = np.sign(As)*As**2 * (nu_1*nu_2/23.e9**2)**bs
+
+        sxd = rho*As*Ad *( (nu_1/23.e9)**bs*(nu_2/353.e9)**bd*g_2 \
+                           + (nu_2/23.e9)**bs*(nu_1/353.e9)**bd*g_1 )
+
+        cxd = delta*Ac*Ad *( pf*planck_bb(nu_1, T_cmb, deriv=True)*(nu_2/353.e9)**bd*g_2 \
+                             + pf*planck_bb(nu_2, T_cmb, deriv=True)*(nu_1/353.e9)**bd*g_1 )
+        rat = 0.
+
+        if component != None:
+            if 'ratio' in component:
+                rat = float(sxs)/(dxd)
+                #rat = np.log(float(dxd)/sxs)
+
+            if not 'dust' in component:
+                dxd = 0.
+            if not 'cmb' in component:
+                cxc = 0.
+            if not 'sync' in component:
+                sxs = 0.
+            if not 'rho' in component:
+                sxd = 0.
+            if not 'delta' in component:
+                cxd = 0.
+
+        vals.append(convert*(cxc+dxd+sxs+sxd+cxd)+rat)
+
+        if grad:
+            try:
+                g_As = 2.*sxs/As + sxd/As
+            except (ValueError, ZeroDivisionError):
+                g_As = np.nan
+            try:
+                g_bs = math.log(nu_1*nu_2/23.0e9**2)*sxs \
+                       + rho*As*Ad *( math.log(nu_1/23.e9)*(nu_1/23.e9)**bs * (nu_2/353.e9)**bd*g_2 \
+                                      + math.log(nu_2/23.e9)*(nu_2/23.e9)**bs * (nu_1/353.e9)**bd*g_1 )
+            except (ValueError, ZeroDivisionError):
+                g_bs = np.nan
+            try:
+                g_Ad = 2.*dxd/Ad + sxd/Ad + cxd/Ad
+            except (ValueError, ZeroDivisionError):
+                g_Ad = np.nan
+            try:
+                g_bd = math.log(nu_1*nu_2/353.0e9**2)*dxd \
+                       + rho*As*Ad *( (nu_1/23.e9)**bs * math.log(nu_2/353.e9)*(nu_2/353.e9)**bd*g_2 \
+                                      + (nu_2/23.e9)**bs * math.log(nu_1/353.e9)*(nu_1/353.e9)**bd*g_1 ) \
+                       + delta*Ac*Ad *( pf*planck_bb(nu_1, T_cmb, deriv=True) * math.log(nu_2/353.e9)*(nu_2/353.e9)**bd*g_2 \
+                                        + pf*planck_bb(nu_2, T_cmb, deriv=True) * math.log(nu_1/353.e9)*(nu_1/353.e9)**bd*g_1 )
+            except (ValueError, ZeroDivisionError):
+                g_bd = np.nan
+            try:
+                g_Ac = 2.*cxc/Ac + cxd/Ac 
+            except (ValueError, ZeroDivisionError):
+                g_Ac = np.nan
+            try:
+                g_rho = sxd/rho
+            except (ValueError, ZeroDivisionError):
+                g_rho = np.nan
+            try:
+                g_delta = cxd/delta
+            except (ValueError, ZeroDivisionError):
+                g_delta = np.nan
+
+            
+            grads.append(np.nan_to_num(convert*np.array([g_As, g_bs, g_Ad, g_bd, g_Ac, g_rho, g_delta])))
+
+    if grad:
+        return np.array(grads), samples  # Return the Jacobian of powers wrt params
     else:
         return vals, samples
 

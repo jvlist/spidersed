@@ -50,7 +50,7 @@ def plot_spectra(sed):
     Plots the fitted and data spectra of an SED object.
 
     Arguments:
-    sed: An SED object. Posteriors do not have to be computed yet, but it wil; be fast if they are.
+    sed: An SED object. Posteriors do not have to be computed yet, but it will be much faster if they are.
     '''
     matplotlib.rcParams.update(matplotlib.rcParamsDefault)
     plt.rc('text', usetex=False)
@@ -77,7 +77,7 @@ def plot_spectra(sed):
                                                    'correlation_coefficient', 'dustxcmb_correlation']
                        ])
         
-        fit_points, fit_errs, _, _ = realize_fit_cxd(fs, pairs, traces, component=None, mle=True, around_ml=True)
+        fit_points, fit_errs, _, _ = realize_fit_cxd(ac, pairs, traces, component=None, mle=True, around_ml=True)
         
         fit_errs_p, fit_errs_m = map(np.array, zip(*fit_errs))
         dats, daterrs = slist[i]
