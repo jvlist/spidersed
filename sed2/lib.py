@@ -27,7 +27,7 @@ def calc_spec_cxd(As, bs, Ad, bd, Ac, start, end, rho, delta, pairs, samples=Non
     '''
 
     T_dust = 19.6
-    T_cmb = 2.7
+    T_cmb = 2.725
 
     pf = 1e20 #unit prefactor, convert to MJy
     '''
@@ -46,7 +46,6 @@ def calc_spec_cxd(As, bs, Ad, bd, Ac, start, end, rho, delta, pairs, samples=Non
     vals = []
     grads = []
     for (nu_1, nu_2) in samples:
-        #nu_1, nu_2 = pairs[f][0]*1.e9, pairs[f][1]*1.e9
         nu_1 *= 1.e9
         nu_2 *= 1.e9
 
@@ -137,7 +136,8 @@ def calc_spec_vec(params, samples, component=None, grad=False):
     component is a list of things to include; 'dust', 'cmb', 'sync', 'rho', 'delta' are allowed. None returns all components.
     '''
 
-    As, bs, Ad, bd, Ac, rho, delta = params
+    # theano seems to hand over a list of 0-dimension arrays. Converting to floats first speeds things up by 50%. Come on, theano.    
+    As, bs, Ad, bd, Ac, rho, delta = [float(p) for p in params]
 
 
     T_dust = 19.6
@@ -229,6 +229,119 @@ def calc_spec_vec(params, samples, component=None, grad=False):
 
 
 
+def calc_spec_harm(params, ells, samples, component=None, grad=False):
+    '''
+    Calculate a frequency spectrum with power law dust and synchrotron, and flat CMB. Includes dust x cmb correlation.
+
+    Take first 5 arguments as params, where the spectrum is A_sync*(nu_s/nu_s0)^b_s + A_dust*(nu_d/nu_d0)^b_d + A_cmb.
+
+    component is a list of things to include; 'dust', 'cmb', 'sync', 'rho', 'delta' are allowed. None returns all components.
+    '''
+    
+
+    # theano seems to hand over a list of 0-dimension arrays. Converting to floats first speeds things up by 50%. Come on, theano.
+    As, bs, Ad, bd, Ac, rho, delta, bd_ell, bs_ell = [float(p) for p in params]
+
+    T_dust = 19.6
+    T_cmb = 2.7
+
+    pf = 1e20 #unit prefactor, convert to MJy
+
+    vals = [[]]*len(ells)
+    grads = [[]]*len(ells)
+
+    for i, ell in enumerate(ells):
+        for (nu_1, nu_2) in samples:
+            nu_1 *= 1.e9
+            nu_2 *= 1.e9
+
+            convert = (pf*planck_bb(nu_1, T_cmb, deriv=True)*pf*planck_bb(nu_2, T_cmb, deriv=True))**-1
+            g_1, g_2 = planck_bb(nu_1, T_dust)/planck_bb(353.e9, T_dust), planck_bb(nu_2, T_dust)/planck_bb(353.e9, T_dust)
+
+            cxc = np.sign(Ac)*Ac**2 * pf*planck_bb(nu_1, T_cmb, deriv=True)*pf*planck_bb(nu_2, T_cmb, deriv=True)
+            dxd = np.sign(Ad)*Ad**2 * (nu_1*nu_2/353.e9**2)**bd * g_1*g_2 * (ell**2/95.0**2)**bd_ell
+            sxs = np.sign(As)*As**2 * (nu_1*nu_2/23.e9**2)**bs * (ell**2/95.0**2)**bs_ell
+
+            sxd = rho*As*Ad *( (nu_1/23.e9)**bs*(nu_2/353.e9)**bd*g_2 \
+                               + (nu_2/23.e9)**bs*(nu_1/353.e9)**bd*g_1 ) * (ell/95.0)**(bd_ell+bs_ell)
+
+            cxd = delta*Ac*Ad *( pf*planck_bb(nu_1, T_cmb, deriv=True)*(nu_2/353.e9)**bd*g_2 \
+                                 + pf*planck_bb(nu_2, T_cmb, deriv=True)*(nu_1/353.e9)**bd*g_1 ) * (ell/95.0)**(bd_ell)
+            rat = 0.
+
+            if component != None:
+                if 'ratio' in component:
+                    rat = float(sxs)/(dxd)
+                    #rat = np.log(float(dxd)/sxs)
+
+                if not 'dust' in component:
+                    dxd = 0.
+                if not 'cmb' in component:
+                    cxc = 0.
+                if not 'sync' in component:
+                    sxs = 0.
+                if not 'rho' in component:
+                    sxd = 0.
+                if not 'delta' in component:
+                    cxd = 0.
+
+            vals[i].append(convert*(cxc+dxd+sxs+sxd+cxd)+rat)
+
+            if grad:
+                try:
+                    g_As = 2.*sxs/As + sxd/As
+                except (ValueError, ZeroDivisionError):
+                    g_As = np.nan
+                try:
+                    g_bs = math.log(nu_1*nu_2/23.0e9**2)*sxs \
+                           + rho*As*Ad *( math.log(nu_1/23.e9)*(nu_1/23.e9)**bs * (nu_2/353.e9)**bd*g_2 \
+                                          + math.log(nu_2/23.e9)*(nu_2/23.e9)**bs * (nu_1/353.e9)**bd*g_1 ) * (ell/95.0)**(bs_ell+bd_ell)
+                except (ValueError, ZeroDivisionError):
+                    g_bs = np.nan
+                try:
+                    g_Ad = 2.*dxd/Ad + sxd/Ad + cxd/Ad
+                except (ValueError, ZeroDivisionError):
+                    g_Ad = np.nan
+                try:
+                    g_bd = math.log(nu_1*nu_2/353.0e9**2)*dxd \
+                           + rho*As*Ad *( (nu_1/23.e9)**bs * math.log(nu_2/353.e9)*(nu_2/353.e9)**bd*g_2 \
+                                          + (nu_2/23.e9)**bs * math.log(nu_1/353.e9)*(nu_1/353.e9)**bd*g_1 ) * (ell/95.0)**(bd_ell+bs_ell)\
+                           + delta*Ac*Ad *( pf*planck_bb(nu_1, T_cmb, deriv=True) * math.log(nu_2/353.e9)*(nu_2/353.e9)**bd*g_2 \
+                                            + pf*planck_bb(nu_2, T_cmb, deriv=True) * math.log(nu_1/353.e9)*(nu_1/353.e9)**bd*g_1 ) * (ell/95.0)**bd_ell
+                except (ValueError, ZeroDivisionError):
+                    g_bd = np.nan
+                try:
+                    g_Ac = 2.*cxc/Ac + cxd/Ac 
+                except (ValueError, ZeroDivisionError):
+                    g_Ac = np.nan
+                try:
+                    g_rho = sxd/rho
+                except (ValueError, ZeroDivisionError):
+                    g_rho = np.nan
+                try:
+                    g_delta = cxd/delta
+                except (ValueError, ZeroDivisionError):
+                    g_delta = np.nan
+                try:
+                    g_bd_ell = math.log(ell**2/95.0**2)*dxd + math.log(ell/95.0)*sxd + math.log(ell/95.0)*cxd
+                except (ValueError, ZeroDivisionError):
+                    g_bd_ell = np.nan
+                try:
+                    g_bs_ell = math.log(ell**2/95.0**2)*sxs + math.log(ell/95.0)*sxd
+                except (ValueError, ZeroDivisionError):
+                    g_bs_ell = np.nan
+
+
+                grads[i].append(np.nan_to_num(convert*np.array([g_As, g_bs, g_Ad, g_bd, g_Ac, g_rho, g_delta, g_bd_ell, g_bs_ell])))
+
+    if grad:
+        return np.array(grads), samples  # Return the Jacobian of powers wrt params
+    else:
+        return vals, samples
+
+
+
+
 def make_spectrum(traces, start, end, pairs, samples=None, manual_samples=False, component=None):
     '''
     Make a sim frequency spectrum with power law dust and synchrotron, and flat CMB.
@@ -281,6 +394,22 @@ def make_spectrum_cxd(traces, start, end, pairs, samples=None, manual_samples=Fa
     vals, samples = calc_spec_cxd(r_As,r_bs,r_Ad,r_bd,r_Ac, start, end, r_rho, r_delta, pairs, samples=samples, manual_samples=manual_samples, component=component)
 
     return np.array(vals), np.array(samples), np.array(params)
+
+
+def make_spectrum_harm(traces, ell, samples, manual_samples=False, component=None):
+    '''
+    Make a sim frequency spectrum with power law dust and synchrotron, and flat CMB. Include CMB/Dust correlation
+
+    Take first 6 arguments as [mean, error] lists, where the spectrum is A_sync*(nu_s/nu_s0)^b_s + A_dust*(nu_d/nu_d0)^b_d + A_cmb.
+    Error is taken as a fraction of the mean value.
+    Last two arguments are start and end frequencies in GHz
+    '''
+
+    As, bs, Ad, bd, Ac, rho, delta, bd_ell, bs_ell = traces
+
+    vals, samples = calc_spec_harm(traces, ell, samples, component=component, grad=False)
+
+    return np.array(vals[0]), np.array(samples[0]), np.array(traces)
 
 
 
@@ -402,7 +531,73 @@ def realize_fit_cxd(samples, pairs, traces, labels=[], bounds={}, view_dists=Fal
     else:
         perrs, ds = [], []
         for i in range(len(errs[0,:])):
-            (m, p), detect = narrowest_percent(errs[:,i], bf[i], fraction=0.68, require_positive=require_positive, weights=weights[:,i])
+            (m, p), detect = narrowest_percent(errs[:,i], bf[i], fraction=0.95, require_positive=require_positive, weights=weights[:,i])
+            perrs.append( (bf[i]-m,p-bf[i]) )
+            ds.append(detect)
+
+        to_return = [bf, np.array(perrs), [p[1] for p in perrs], ds]
+
+    return to_return
+
+
+
+def realize_fit_harm(samples, ell, pairs, traces, labels=[], bounds={}, component=None, do_confidence=False, 
+                     get_shape=False, percent=True, mle=False, around_ml=False, require_positive=True):
+
+    for datname in bounds.keys():
+        ind = np.where(np.array(labels) == datname)[0][0]
+        keep = np.where(np.logical_and(traces[ind] > bounds[datname][0], traces[ind] < bounds[datname][1]))
+        if np.any(keep):
+            traces = [d[keep] for d in traces]
+
+    if mle:
+        bf_traces = []
+        for t in traces:
+            k = scipy.stats.gaussian_kde(t)
+            x = np.linspace(min(t), max(t), 100)
+            bf_traces.append(x[np.argmax(k(x))])
+
+        bf, sams, params = make_spectrum_harm(bf_traces, ell, samples, component=component)
+ 
+    errs = np.array([])
+    weights = np.array([])
+    # pick 5000 random sample indices
+    ind_draws = random.choice(len(traces[0]), 5000)
+
+    for i in ind_draws:
+        vals, sams, params = make_spectrum_harm(traces[:,i], ell, samples, component=component)
+
+        if errs.any():
+            errs = np.vstack((errs, vals))
+        else:
+            errs = vals
+
+        tw = [traces[0,i], bf_traces[1], traces[2,i], bf_traces[3], traces[4,i], traces[5,i], traces[6,i]]
+        w = np.array([weights_by_param(tw, s, pairs, component=component) for s in samples])
+
+        if weights.any():
+            weights = np.vstack((weights, w))
+        else:
+            weights = w
+
+
+    if get_shape:
+        shape = scipy.stats.chi2.fit(errs[:,0], floc=0)
+
+    if not mle:
+        bf = np.nanmedian(errs, axis=0)
+
+    if not around_ml:
+        to_return = [bf, np.array([two_sided_std(errs[:,i], percent=percent) for i in range(len(errs[0,:]))])]
+        if do_confidence:
+            to_return += [np.percentile(errs, 84, axis=0)]
+        if get_shape:
+            to_return += [shape]
+
+    else:
+        perrs, ds = [], []
+        for i in range(len(errs[0,:])):
+            (m, p), detect = narrowest_percent(errs[:,i], bf[i], fraction=0.95, require_positive=require_positive, weights=weights[:,i])
             perrs.append( (bf[i]-m,p-bf[i]) )
             ds.append(detect)
 
@@ -600,8 +795,10 @@ def get_data(d, ells_to_do=['20.0', '45.0', '70.0', '95.0', '120.0', '145.0', '1
     return traces
 
 
-def nanmad(arr):
-    return np.nanmedian(np.abs(arr-np.nanmedian(arr)))
+def nanmad(arr, axis=0):
+    meds = np.stack([np.nanmedian(arr, axis=axis)] * np.shape(arr)[axis], 
+                    axis=axis)
+    return np.nanmedian(np.abs(arr-meds), axis=axis)
 
 
 
@@ -1119,8 +1316,8 @@ def weights_by_param(params, freq, freq_pairs, component=None):
     T_cmb = 2.7
     pf = 1e20 #unit prefactor, convert to MJy
 
-    nu_1, nu_2 = freq_pairs[freq][0]*1.e9, freq_pairs[freq][1]*1.e9
-    freq *= 1.e9
+    nu_1, nu_2 = freq[0]*1.e9, freq[1]*1.e9
+    #freq *= 1.e9
     
     convert = (pf*planck_bb(nu_1, T_cmb, deriv=True)*pf*planck_bb(nu_2, T_cmb, deriv=True))**-1
     g_1, g_2 = planck_bb(nu_1, T_dust)/planck_bb(353.e9, T_dust), planck_bb(nu_2, T_dust)/planck_bb(353.e9, T_dust)

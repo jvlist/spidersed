@@ -11,6 +11,9 @@ import spider_analysis as sa
 import json
 import healpy as hp
 from math import ceil
+from scipy.special import comb
+import itertools
+import math
 
 
 ### Defaults ###
@@ -149,6 +152,7 @@ class SED(object):
     -noise_dict: dict; A dictionary mapping filenames used in map_coll to their respective noise maps
          (if noise maps are being added). If filenames have seeds in them, they should be replaced with
          '{}' for iteration. Default: A dict appropriate for maps used in the bmode paper. 
+    -seeds: The list of seeds to iterate over when doing a bunch of sim runs. Default: range(20)
     -spec_file: string; Full or relative path filename where spectra will be stored. This will be
          written if it doesn't exist. Default: '/projects/WCJONES/spider/jvlist/specs/SED_leakage_subtract.p'
     -spec_err_file: string; Full or relative path filename where spectra errors are stored. The errors from
@@ -165,8 +169,9 @@ class SED(object):
     -crosses_to_do: List of tuples; List of map pairs which will be crossed. If None, map_coll.all_crosses
          will be called to populate the list. This is probably best except in specific cases.
          Default: None
-    -sed_model: string; Which SED model to use for the MCMC. Currently, only 'dustxcmb' is supported
+    -sed_model: string; Which SED model to use for the MCMC; currently, 'dustxcmb' amd 'harmonic' are supported
          Default: 'dustxcmb'
+    -step: string; Step method to use for sampling; must be understandable by pymc. Default: 'metropolis'
     -mask: map object; The mask to use if computing spectra. Default: SPIDER latlon + pointsource mask
     -ells: list of floats; List of ells to do when computing posteriors. These must match bins returned by 
          estimate_spectrum. Default: [20.0, 45.0, 70.0, 95.0, 120.0, 145.0, 170.0]
@@ -195,13 +200,18 @@ class SED(object):
          through get_posteriors.
     
     '''
+    
+    overell_models = ['harmonic']
+
     def __init__(self, 
                  map_dir = '/projects/WCJONES/spider/jvlist/SED_leakage_subtract/',
                  map_coll = MapCollection(default_names),
                  auto_suffixes = default_suffixes,
                  noise_map = default_noise,
+                 sig_seeds = [],#list(map(str, range(203, 214)))
+                 seeds = list(map(lambda x: str(x).zfill(4), range(20))),
                  spec_file = '/projects/WCJONES/spider/jvlist/specs/SED_leakage_subtract.p', 
-                 spec_err_file = None,#'/projects/WCJONES/spider/jvlist/specs/SED_xflike_model_sims.p', 
+                 spec_err_file = '/projects/WCJONES/spider/jvlist/specs/SED_xflike_model_sims_rekeyed.p', 
                  post_dir = '/scratch/gpfs/jvlist/posteriors_leakage_subtract/',
                  misc_dir = '/projects/WCJONES/spider/jvlist/SED_misc/',
                  fl_file = 'sed_fls.p',
@@ -209,12 +219,13 @@ class SED(object):
                  do_cxd = True, 
                  crosses_to_do = None,
                  sed_model = 'dustxcmb', 
+                 step = 'metropolis',
                  mask = np.logical_and(sa.map.standard_point_source_mask(), sa.map.latlon_mask()),
                  ells = [20.0, 45.0, 70.0, 95.0, 120.0, 145.0, 170.0],
                  pols = ['EE', 'BB'],
                  recompute = None,
                  override_config = False,
-                 sopts = dict(mem=4, wallt=1, delete=False,
+                 sopts = dict(mem=20, wallt=3, delete=True,
                               ppn=14, mpi_procs=14, nodes=1, srun=True,
                               scheduler='slurm', nice=None, queue="physics",
                               env_script=os.path.join(os.environ["SPIDER_ROOT"], 
@@ -227,6 +238,8 @@ class SED(object):
         self.map_coll = map_coll
         self.auto_suffixes = auto_suffixes
         self.noise_map = noise_map
+        self.sig_seeds = sig_seeds
+        self.seeds = seeds
         self.spec_file = spec_file
         self.spec_err_file = spec_err_file
         self.post_dir = post_dir
@@ -234,6 +247,7 @@ class SED(object):
         self.fl_file = fl_file
         self.do_sim = do_sim
         self.sed_model = sed_model
+        self.step = step
         self.mask = mask
         self.ells = ells
         self.pols = pols
@@ -248,6 +262,9 @@ class SED(object):
             self.crosses_to_do = map_coll.all_crosses()
         else:
             self.crosses_to_do = crosses_to_do
+            
+        self.is_overell = self.sed_model in self.overell_models
+            
 
         # Things that will be checked before overwriting posteriors
         self.config_to_check = ['map_dir','fl_file','do_sim','crosses_to_do','sed_model','ells','pols','other_config']  
@@ -271,7 +288,7 @@ class SED(object):
         rotatingHandler.setLevel(logging.INFO)
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         rotatingHandler.setFormatter(formatter)
-        logging.getLogger().addHandler(rotatingHandler)
+        logging.getLogger(__name__).addHandler(rotatingHandler)
         
         self.log = logging.getLogger(__name__)
         # End Logging
@@ -477,7 +494,11 @@ class SED(object):
         self.write_config(self.post_dir)
 
         do_recompute = self.__check_recompute(['spectra', 'posteriors', 'fl'])
-        etd = list(map(str, self.ells))
+
+        if self.sed_model in self.overell_models:
+            etd = ['allell']
+        else:
+            etd = list(map(str, self.ells))
         
         if not do_recompute and not found_conflict:
             try:
@@ -510,11 +531,17 @@ class SED(object):
 
 
     def make_posteriors(self, fl_file=None, manual_slurm=False, step=None):
+        if step is None:
+            step = self.step
         
         self.sopts['output'] = './slurm/output_log_sedfit'
         self.sopts['error'] = './slurm/error_log_sedfit'
 
-        procs = len(self.ells)*len(self.pols) # One process per ell, pol bin
+        if self.sed_model in self.overell_models:
+            procs = len(self.pols) # One process per pol
+        else:
+            procs = len(self.ells)*len(self.pols) # One process per ell, pol bin
+
         nodes = 1 + procs // 40 # One node for every 40 processes
         ppn = ceil(procs / nodes) # Split jobs evenly across nodes
 
@@ -538,6 +565,7 @@ class SED(object):
         ), 
                       name='sedfit', **self.sopts)
                 
+        startt = time.time()
         self.log.info('Submitted sedfit job')
         print('Submitted sedfit job. Waiting for job to finish... (This takes roughly 1.5 minutes per 1000 samples on della)')
         
@@ -545,4 +573,118 @@ class SED(object):
         while int(subprocess.check_output('squeue | grep sedfit | wc -l', shell=True)) > 0:
             time.sleep(60)
 
+        timed = time.time() - startt
+        self.log.info('Sampling took {timed} seconds.')
+
         return None
+
+
+    def make_fits(self, ell, pol, component=None, fl_file='default'):
+        '''
+        docstring
+        '''
+         
+        posts = self.get_posteriors(self, fl_file=fl_file)
+
+        found_conflict = self.check_config(self.post_dir)
+        self.write_config(self.post_dir)
+
+        do_recompute = self.__check_recompute(['spectra', 'posteriors', 'fl'])
+
+        if self.sed_model in self.overell_models:
+            etd = ['allell']
+        else:
+            etd = list(map(str, self.ells))
+        
+        posts = self.get_posteriors(self, fl_file=fl_file)[ell][pol]
+
+        traces = np.array([posts[str(e)][p][param] for param in ['synchrotron_amplitude','synchrotron_beta',
+                                                   'dust_amplitude','dust_beta','cmb_amplitude',
+                                                   'correlation_coefficient', 'dustxcmb_correlation']
+                       ])
+
+
+        fit = sl.realize_fit(self.crosses_to_do, {}, traces, component=component, get_shape=False, percent=True, mle=True, around_ml=True, require_positive=False)
+
+        return fit
+        
+    def compute_errors(self, fl_file='default', nthreads=40, nnodes=1):
+        '''
+        docstring
+        '''
+        if fl_file == 'default':
+            fl_file = self.fl_file
+
+        pairs = list(itertools.permutations(self.seeds, 2))
+
+        #procs = nthreads
+        #nodes = nnodes
+        #ppn = nthreads//nodes
+
+        #self.sopts['ppn'] = ppn
+        #self.sopts['mpi_procs'] = procs
+        self.sopts['nodes'] = nnodes
+
+        mc = json.dumps(self.map_coll)
+        with open('./tmpmask' , 'wb') as pfile:
+            pickle.dump(self.mask, pfile)
+        #jmask = json.dumps(self.mask.tolist())
+        jseeds = json.dumps(list(self.seeds))
+
+        if fl_file is not None:
+            ff = self.misc_dir+'/'+self.fl_file
+        else:
+            ff = None
+
+        fpath = os.path.join(os.getenv('SED2_DIR'), 'simset.py')
+            
+        if len(self.sig_seeds):
+            maxcount = len(self.sig_seeds)*len(self.crosses_to_do)*math.ceil(len(pairs)/nthreads) - 1
+        else:
+            maxcount = len(self.crosses_to_do)*math.ceil(len(pairs)/nthreads) - 1
+            sig_seeds = ['']  # Put one empty string in so the loop does a single iteration
+
+        with open('./errorcounter', 'w') as f:
+            f.write(str(maxcount))
+
+        count = 0
+        for sig in self.sig_seeds:
+            for cross in self.crosses_to_do:
+                _pairs = pairs[:]
+                while len(_pairs):
+                    take = min(nthreads, len(_pairs))
+                
+                    ppn = take//nnodes
+                    self.sopts['ppn'] = ppn
+                    self.sopts['mpi_procs'] = take
+                    
+                    pairlist = _pairs[:take]
+                    del _pairs[:take]
+
+                    crosslist = [cross]
+                    
+                    self.sopts['output'] = f'./slurm/output_log_sedfit_{count}'
+                    self.sopts['error'] = f'./slurm/error_log_sedfit_{count}'
+
+                    # Assign each process a place in line for writing results. This prevents race conditions.
+                    # It would be nicer to lock files but afaik python doesn't have an elegant way to do this. 
+                    playnice = maxcount - count  # playnice is reverse-order to count so that things run in roughly the order they submit
+
+                    if count % 50 == 0:
+                        print(f'Submitting job {count}')
+                    
+                    while int(subprocess.check_output('squeue | grep sederrs | wc -l', shell=True)) > 500:  # Don't submit too many jobs at once to avoid job user limits
+                        time.sleep(30)
+
+                    sa.batch.qsub("python "+fpath+" '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}'".format(
+                        mc, self.map_dir, ff, jseeds, json.dumps(self.noise_map), json.dumps(self.auto_suffixes),
+                        self.spec_err_file, json.dumps(pairlist), json.dumps(crosslist), sig,
+                    ), 
+                                  name=f'sederrs_{count}', **self.sopts)
+                    
+                    count += 1
+
+        self.log.info(f'Submitted {count} errors jobs')
+        print(f'Submitted {count} errors jobs. This will be a long process; exiting.')
+        
+        sys.exit()

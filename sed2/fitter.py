@@ -9,7 +9,7 @@ import json
 from sed2.base import MapCollection
 
 
-def sed_ravel(specs, ells, pols, fl=None, map_coll=None):
+def sed_ravel(specs, ells, pols, fl=None, map_coll=None, group_ells=False):
     '''
     Reorganize the specs dictionary into lists that MPI can scatter to parallel processes for pymc.
     '''
@@ -19,16 +19,14 @@ def sed_ravel(specs, ells, pols, fl=None, map_coll=None):
     slist = []
     
     ac = map_coll.all_crosses()
-       #fs = np.array([map_coll.cross_freq(m1,m2) for m1, m2 in ac])
-       #fs.sort()
-
 
     if fl != 'None':
         with open(fl, 'rb') as pfile:
             flf = pickle.load(pfile)
     
-    for i, l in enumerate(ells):
-        for j, p in enumerate(pols):
+
+    for j, p in enumerate(pols):
+        for i, l in enumerate(ells):
             elltest = np.array(next(iter(specs.values()))[0])  # Get some random spec and pull out the ell list. Should be the same for all fs
             try:
                 ellind = np.where(elltest == l)[0][0]
@@ -50,7 +48,26 @@ def sed_ravel(specs, ells, pols, fl=None, map_coll=None):
             blist.append( (l,p) )
             slist.append( (vals, errs) )
 
+    if group_ells:
+        ars = np.argsort([b[0] for b in blist])
+        blist = np.array(blist)[ars]
+        slist = np.array(slist)[ars]
+        
+        blist_ = []
+        slist_ = []
+        for p in pols:
+            inds = np.where([b[1] == p for b in blist])[0]
+            alldats = np.array(slist)[inds]
+            alldats = ([d[0] for d in alldats],[d[1] for d in alldats])
+
+            blist_.append(p)
+            slist_.append(alldats)
+
+        blist = blist_#([b[0] for b in blist_],[b[1] for b in blist_])
+        slist = slist_
+
     return blist, slist
+
 
 def file_write(ell, pol, trace, write_dir):
     wname = write_dir + '/' + '{}_{}_trace.p'.format(ell, pol)
@@ -71,24 +88,21 @@ if __name__ == '__main__':
     size = comm.Get_size()
     rank = comm.Get_rank()
 
+    group_ells = model_name in ['harmonic']
 
     # Grab data in the root process
     if rank == 0:
-        #with open(pairs_file, 'rb') as pfile: 
-        #   freq_pairs = pickle.load(pfile)
-
-        with open(spec_file, 'rb') as pfile:
-            specs = pickle.load(pfile)
 
         if fl_file != 'None':
             with open(fl_file, 'rb') as pfile: 
                 fls = pickle.load(pfile)
+        with open(spec_file, 'rb') as pfile:
+            specs = pickle.load(pfile)
+ 
+        blist, slist = sed_ravel(specs, ells, pols, fl=fl_file, map_coll=map_coll, group_ells=group_ells)
 
         ac = map_coll.all_crosses()
-        #fs = np.array([map_coll.cross_freq(m1,m2) for m1, m2 in ac])
-        #fs.sort()
 
-        blist, slist = sed_ravel(specs, ells, pols, fl=fl_file, map_coll=map_coll)
         if size != len(blist):
             raise ValueError('Number of MPI processes should be len(ells)*len(pols)')
 
@@ -98,31 +112,59 @@ if __name__ == '__main__':
         blist, slist = None, None
     
 
-    # Process Communication 
-    bs = comm.scatter(blist, root=0)  # One ell,pol bin per process
-    ss = comm.scatter(slist, root=0)
-    
-    #freq_pairs = comm.bcast(freq_pairs, root=0)  # Everybody needs freq_pairs and fs
-    #fs = comm.bcast(fs, root=0)
-    map_coll = comm.bcast(map_coll, root=0)  # Everybody needs freq_pairs and fs
-    ac = comm.bcast(ac, root=0)
+    if not group_ells:  # These fit ell-by-ell, so use mpi and several fg_model calls
+        # Process Communication 
+        bs = comm.scatter(blist, root=0)  # One ell,pol bin per process
+        ss = comm.scatter(slist, root=0)
+        
+        map_coll = comm.bcast(map_coll, root=0)  # Everybody needs map_coll and ac
+        ac = comm.bcast(ac, root=0)
     
 
-    with add_prefix(f'Process #{rank}'):
-        dat, err = ss
-        ell, pol = bs
-        print('Initializing model.')
-        model = sed2.fg_models.init('dustxcmb', dat, err, ac, map_coll, do_sim)
-
-        with model:  # pymc3 wants the model object in the context stack when running things
-            # Gradient based step methods are currently bugged, so use Metropolis-Hastings for now. 
-            # Also, don't try to split into multiple processes, because it probably won't help given MPI is around
-            print('Sampling with model.')
-            if step == 'metropolis':
-                trace = pymc.sample(10000, tune=1000, step=pymc.Metropolis(), cores=1, progressbar=False, return_inferencedata=False)
-            elif step == 'None':
-                trace = pymc.sample(10000, tune=1000, cores=1, progressbar=False, return_inferencedata=False)
-            else:
-                raise NameError('Unknown step method.')
+        with add_prefix(f'Process #{rank}'):
+            dat, err = ss
+            ell, pol = bs
+            print('Initializing model.')
+            model = sed2.fg_models.init(model_name, dat, err, ac, map_coll, do_sim)
             
-            file_write(ell, pol, trace, post_dir)
+            with model:  # pymc3 wants the model object in the context stack when running things
+                # Also, don't try to split into multiple processes, because it probably won't help given MPI is around
+                print('Sampling with model.')
+                if step == 'metropolis':
+                    trace = pymc.sample(40000, tune=1000, chains=2, step=pymc.Metropolis(), progressbar=False, return_inferencedata=False)
+                elif step == 'None':
+                    trace = pymc.sample(40000, tune=1000, chains=2, progressbar=False, return_inferencedata=False)
+                else:
+                    raise NameError('Unknown step method.')
+            
+                file_write(ell, pol, trace, post_dir)
+                file_write(ell, pol+'_model', model, post_dir)
+
+    else:  # These models fit over ell, so only split by pol
+    
+        # Process Communication 
+        bs = comm.scatter(blist, root=0)  # One ell,pol bin per process
+        ss = comm.scatter(slist, root=0)
+
+        map_coll = comm.bcast(map_coll, root=0)  # Everybody needs map_coll and ac
+        ac = comm.bcast(ac, root=0)
+    
+
+        with add_prefix(f'Process #{rank}'):
+            dat, err = ss
+            pol = bs
+            print('Initializing model.')
+            model = sed2.fg_models.init(model_name, dat, err, ac, map_coll, do_sim, ells=ells)
+            
+            with model:  # pymc3 wants the model object in the context stack when running things
+                # Also, don't try to split into multiple processes, because it probably won't help given MPI is around
+                print('Sampling with model.')
+                if step == 'metropolis':
+                    trace = pymc.sample(10000, tune=1000, chains=2, step=pymc.Metropolis(), progressbar=False, return_inferencedata=False)
+                elif step == 'None':
+                    trace = pymc.sample(10000, tune=1000, chains=2, progressbar=False, return_inferencedata=False)
+                else:
+                    raise NameError('Unknown step method.')
+            
+                file_write('allell', pol, trace, post_dir)
+                file_write('allell', pol+'_model', model, post_dir)
