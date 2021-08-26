@@ -283,3 +283,50 @@ def make_spec_vals(sed, params, freq, polcom):
 
 
     return [(d_points, d_errs.tolist()), (s_points, s_errs.tolist()), (c_points, c_errs.tolist()), (r_points, r_errs.tolist()), (rho_points, rho_errs.tolist())], [r_confs, s_confs, d_confs], [s_dets, d_dets]
+
+
+def plot_many_posteriors(sed, param, inval):
+    '''
+    Plots the posterior distributions of an SED object.
+
+    Arguments:
+    sed: An SED object. Posteriors do not have to be computed yet, but it will be much faster if they are.
+    '''
+    #plt.rc('text', usetex=False)
+    #plt.rc('font', family='serif')
+    #az.rcParams.update({"plot.max_subplots": 50})
+    #az.style.use(['arviz-darkgrid', 'arviz-purplish'])
+    plt.rcParams["figure.figsize"] = (10,8)
+
+    pd = sed.post_dir
+    posts = {}
+
+    if sed.sed_model in sed.overell_models:
+        etd = ['allell']
+    else:
+        etd = sed.ells
+
+    for e in etd:
+        for p in sed.pols:
+            for sig in sed.sig_seeds:
+                sed.post_dir = os.path.join(pd, sig)
+                posts[sig] = sed.get_posteriors()
+                
+                trace = posts[sig][e][p][param]
+                
+                plt.hist(trace, alpha=0.5, histtype='step', bins='fd')
+
+
+            plt.axvline(x=inval, color='k')
+
+            plt.title(f'{e}, {p}, {param} All seed posteriors')
+
+            if not os.path.exists('./sed_plots'):
+                os.mkdir('./sed_plots')
+            
+            fname = f'./sed_plots/{e}_{p}_manyposteriors.png'
+            print(f'Saving {fname}')
+            plt.savefig(fname)
+            plt.close()
+
+    return None

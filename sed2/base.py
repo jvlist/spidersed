@@ -421,54 +421,67 @@ class SED(object):
         #fs = self.fs_to_do
         do_recompute = self.__check_recompute(['spectra', 'fl'])
 
-        if os.path.exists(self.spec_file) and not do_recompute:
-            self.log.info('Found existing spectra file at %s. Loading that.', self.spec_file)
-            with open(self.spec_file, 'rb') as pfile: 
-                return_spec = pickle.load(pfile)
 
+        if not len(self.sig_seeds):
+            ss = ['']  # Give the loop something to work with
         else:
-            specs = {}
-            self.log.info('Computing spectra.')
-            
-            for m1, m2 in self.crosses_to_do:
-                f1, f2 = self.map_coll.freq(m1), self.map_coll.freq(m2)
-                self.log.info('%s x %s', m1, m2)
+            ss = self.sig_seeds
 
-                ext1, ext2 = '', ''  # Clear filename extentions from previous loop
-                
-                mfile1 = self.map_dir+m1
-                mfile2 = self.map_dir+m2
-                
-                nfile1 = self.map_dir+self.noise_map[m1]
-                nfile2 = self.map_dir+self.noise_map[m2]
-                
-                if mfile1 == mfile2:
-                    ext1 = self.auto_suffixes[0]
-                    ext2 = self.auto_suffixes[1]
+        for sig in ss:
+            if os.path.exists(self.spec_file) and not do_recompute:
+                self.log.info('Found existing spectra file at %s. Loading that.', self.spec_file)
+                with open(self.spec_file, 'rb') as pfile: 
+                    return_spec = pickle.load(pfile)
+
+            else:
+                specs = {}
+                self.log.info('Computing spectra.')
+            
+                for m1, m2 in self.crosses_to_do:
+                    f1, f2 = self.map_coll.freq(m1), self.map_coll.freq(m2)
+                    self.log.info('%s x %s', m1, m2)
                     
-                ellb, clsb, clse, freq = sl.cross_maps(self.mask, add_noise, mfile1, mfile2, 
-                                                       f1, f2, ext1, ext2, 
-                                                       noisefile1=nfile1, noisefile2=nfile2
-                                                   )
-                ellb = [20., 45., 70., 95., 120., 145., 170.]
-                specs[(m1, m2)] = [ellb, clsb, clse]
+                    ext1, ext2 = '', ''  # Clear filename extentions from previous loop
                     
-            if self.spec_err_file is not None:
-                try:
-                    with open(self.spec_err_file, 'rb') as pfile:
-                        specs_err = pickle.load(pfile)
-                except:
-                    self.log.error('Failed to load Spectra Error file %s', self.spec_err_file)
-                    raise
+                    mfile1 = os.path.join(self.map_dir, sig, m1)
+                    mfile2 = os.path.join(self.map_dir, sig, m2)
+                    
+                    nfile1 = self.map_dir+self.noise_map[m1]
+                    nfile2 = self.map_dir+self.noise_map[m2]
+                    
+                    if mfile1 == mfile2:
+                        ext1 = self.auto_suffixes[0]
+                        ext2 = self.auto_suffixes[1]
+                    
+                    ellb, clsb, clse, freq = sl.cross_maps(self.mask, add_noise, mfile1, mfile2, 
+                                                           f1, f2, ext1, ext2, 
+                                                           noisefile1=nfile1, noisefile2=nfile2
+                                                       )
+                    ellb = [20., 45., 70., 95., 120., 145., 170.]
+                    specs[(m1, m2)] = [ellb, clsb, clse]
+                    
+                if self.spec_err_file is not None:
+                    try:
+                        with open(self.spec_err_file, 'rb') as pfile:
+                            specs_err = pickle.load(pfile)
+                    except:
+                        self.log.error('Failed to load Spectra Error file %s', self.spec_err_file)
+                        raise
 
                 for k in specs.keys():
                     specs[k] = [specs[k][0], specs[k][1], specs_err[k][2]]
 
             return_spec = specs
 
-        self.log.info('Saving computed spectra to %s', self.spec_file)
-        with open(self.spec_file, 'wb') as pfile: 
-            pickle.dump(return_spec, pfile)
+            d1, d2 = os.path.split(self.spec_file)
+            if not os.path.exists(os.path.join(d1, sig)):
+                os.mkdir(os.path.join(d1, sig))
+
+            sf = os.path.join(d1, sig, d2)
+            
+            self.log.info('Saving computed spectra to %s', sf)
+            with open(sf, 'wb') as pfile: 
+                pickle.dump(return_spec, pfile)
         
         return return_spec
 
@@ -559,12 +572,30 @@ class SED(object):
 
         fpath = os.path.join(os.getenv('SED2_DIR'), 'fitter.py')
             
-        sa.batch.qsub("python "+fpath+" '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}'".format(
-            self.do_sim, self.sed_model, self.spec_file, 
-            mc, ff, elist, plist, self.post_dir, step
-        ), 
-                      name='sedfit', **self.sopts)
+
+        if not len(self.sig_seeds):  # Just one signal to do
+            sa.batch.qsub("python "+fpath+" '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}'".format(
+                self.do_sim, self.sed_model, self.spec_file, 
+                mc, ff, elist, plist, self.post_dir, step
+            ), 
+                          name='sedfit', **self.sopts)
                 
+        else:
+            for sig in self.sig_seeds:
+                pdir = os.path.join(self.post_dir, sig)
+                if not os.path.exists(pdir):
+                    os.mkdir(pdir)
+                
+                d1, d2 = os.path.split(self.spec_file)
+                sf = os.path.join(d1, sig, d2)
+
+                sa.batch.qsub("python "+fpath+" '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}' '{}'".format(
+                    self.do_sim, self.sed_model, sf, 
+                    mc, ff, elist, plist, pdir, step
+                ), 
+                              name='sedfit', **self.sopts)
+               
+
         startt = time.time()
         self.log.info('Submitted sedfit job')
         print('Submitted sedfit job. Waiting for job to finish... (This takes roughly 1.5 minutes per 1000 samples on della)')
