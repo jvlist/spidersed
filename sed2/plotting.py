@@ -83,9 +83,10 @@ def plot_spectra(sed):
 
     posts = sed.get_posteriors()
     
-    print(sed.misc_dir+'/'+sed.fl_file)
-
-    blist, slist = sed_ravel(specs, sed.ells, sed.pols, fl=sed.misc_dir+'/'+sed.fl_file, map_coll=sed.map_coll)
+    if sed.fl_file is not None:
+        blist, slist = sed_ravel(specs, sed.ells, sed.pols, fl=sed.misc_dir+'/'+sed.fl_file, map_coll=sed.map_coll)
+    else:
+        blist, slist = sed_ravel(specs, sed.ells, sed.pols, fl='None', map_coll=sed.map_coll)
 
     by_ells = []
     dat_ells = []
@@ -310,7 +311,8 @@ def plot_many_posteriors(sed, param, inval):
         for p in sed.pols:
             for sig in sed.sig_seeds:
                 sed.post_dir = os.path.join(pd, sig)
-                posts[sig] = sed.get_posteriors()
+                print(sed.post_dir)
+                posts[sig] = sed.get_posteriors(quash=True)
                 
                 trace = posts[sig][e][p][param]
                 

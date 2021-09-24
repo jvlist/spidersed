@@ -38,7 +38,6 @@ def sed_ravel(specs, ells, pols, fl=None, map_coll=None, group_ells=False):
             errs = [specs[(m1,m2)][2][polind][ellind] for (m1,m2) in ac]
 
             if fl != 'None':
-
                 flv = [flf[(m1,m2)][1][polind][ellind] for (m1,m2) in ac]
                 fle = [flf[(m1,m2)][2][polind][ellind] for (m1,m2) in ac]
 
@@ -131,9 +130,9 @@ if __name__ == '__main__':
                 # Also, don't try to split into multiple processes, because it probably won't help given MPI is around
                 print('Sampling with model.')
                 if step == 'metropolis':
-                    trace = pymc.sample(40000, tune=1000, chains=2, step=pymc.Metropolis(), progressbar=False, return_inferencedata=False)
+                    trace = pymc.sample(10000, tune=1000, chains=2, step=pymc.Metropolis(), progressbar=False, return_inferencedata=False)
                 elif step == 'None':
-                    trace = pymc.sample(40000, tune=1000, chains=2, progressbar=False, return_inferencedata=False)
+                    trace = pymc.sample(10000, tune=1000, chains=2, progressbar=False, return_inferencedata=False)
                 else:
                     raise NameError('Unknown step method.')
             
@@ -160,9 +159,9 @@ if __name__ == '__main__':
                 # Also, don't try to split into multiple processes, because it probably won't help given MPI is around
                 print('Sampling with model.')
                 if step == 'metropolis':
-                    trace = pymc.sample(10000, tune=1000, chains=2, step=pymc.Metropolis(), progressbar=False, return_inferencedata=False)
+                    trace = pymc.sample(5000, tune=0, chains=3, step=pymc.Metropolis(), progressbar=False, return_inferencedata=False)
                 elif step == 'None':
-                    trace = pymc.sample(10000, tune=1000, chains=2, progressbar=False, return_inferencedata=False)
+                    trace = pymc.sample(5000, tune=0, chains=3, progressbar=False, return_inferencedata=False)
                 else:
                     raise NameError('Unknown step method.')
             

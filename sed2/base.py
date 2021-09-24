@@ -63,6 +63,8 @@ default_noise = dict(map_wmap_k        = 'map_23_{}',
 
 default_suffixes = ('_hm1', '_hm2')
 
+unobs_replace = ('reobs', 'unobs')
+
 ### End Defaults ###
 
 
@@ -215,6 +217,7 @@ class SED(object):
                  post_dir = '/scratch/gpfs/jvlist/posteriors_leakage_subtract/',
                  misc_dir = '/projects/WCJONES/spider/jvlist/SED_misc/',
                  fl_file = 'sed_fls.p',
+                 unobs_replace = unobs_replace,
                  do_sim = False, 
                  do_cxd = True, 
                  crosses_to_do = None,
@@ -245,6 +248,7 @@ class SED(object):
         self.post_dir = post_dir
         self.misc_dir = misc_dir
         self.fl_file = fl_file
+        self.unobs_replace = unobs_replace
         self.do_sim = do_sim
         self.sed_model = sed_model
         self.step = step
@@ -380,8 +384,40 @@ class SED(object):
 
         if not already_there or do_recompute:
             self.log.info('Writing fl file to %s/%s', self.misc_dir, self.fl_file)
+            fpath = os.path.join(os.getenv('SED2_DIR'), 'makefl.py')
+            self.sopts['output'] = './slurm/output_log_sedfl'
+            self.sopts['error'] = './slurm/error_log_sedfl'
+
+            #ctd = json.dumps(self.crosses_to_do)
+            ss = json.dumps(self.sig_seeds)
+            ur = json.dumps(self.unobs_replace)
+            etd = json.dumps(self.ells)
+
+            count = 0
+            for c in self.crosses_to_do:
+                cts = json.dumps([c])
+
+                self.sopts['output'] = f'./slurm/output_log_sedfl_{count}'
+                self.sopts['error'] = f'./slurm/error_log_sedfl_{count}'
+                sa.batch.qsub("python "+fpath+" '{}' '{}' '{}' '{}' '{}' '{}' '{}'".format(
+                    cts, ss, self.map_dir, ur, self.misc_dir, self.fl_file, etd,
+                ), 
+                              name=f'sedfl_{count}', **self.sopts)
+                count += 1
+               
+
+            startt = time.time()
+            self.log.info('Submitted sedfl job')
+            print('Submitted sedfl job. Waiting for job to finish...')
+            
+            # Watch slurm, don't proceed until fit job is done.
+            while int(subprocess.check_output('squeue | grep sedfl | wc -l', shell=True)) > 0:
+                time.sleep(60)
+
+            '''
             fdict = {}
             for m1, m2 in self.crosses_to_do:
+
                 f1, f2 = self.map_coll.freq(m1), self.map_coll.freq(m2)
                 fl1 = 90 if f1 in [94.5, 94.51, 94.52, 94.53, 94.54] else 150
                 fl2 = 90 if f2 in [94.5, 94.51, 94.52, 94.53, 94.54] else 150
@@ -395,10 +431,28 @@ class SED(object):
                 farr = [lam(1), lam(2), lam(3), [np.nan]*len(etd), [np.nan]*len(etd), [np.nan]*len(etd)]
 
                 fdict[(m1, m2)] = [etd, farr, farr]
+                
+                fs = {}
+                for sig in self.sig_seeds:
+                    unobs1 = sa.map.ud_grade(sa.map.read_map(os.path.join(self.map_dir, str(sig), m1+'.fits'), field=None), 512)
+                    unobs2 = sa.map.ud_grade(sa.map.read_map(os.path.join(self.map_dir, str(sig), m2+'.fits'), field=None), 512)
+                    reobs1 = sa.map.ud_grade(sa.map.read_map(os.path.join(self.map_dir, str(sig), m1.replace(*self.unobs_replace)+'.fits'), field=None), 512)
+                    reobs2 = sa.map.ud_grade(sa.map.read_map(os.path.join(self.map_dir, str(sig), m2.replace(*self.unobs_replace)+'.fits'), field=None), 512)
+
+                    print(np.shape(unobs1), np.shape(reobs1))
+                    unspecs = sa.map.estimate_spectrum(unobs1, map2=unobs2, lfac=True, return_binned=True)
+                    print(np.shape(unobs2), np.shape(reobs2))
+                    respecs = sa.map.estimate_spectrum(reobs1, map2=reobs2, lfac=True, return_binned=True)
+                    fs[sig] = np.divide(unspecs[1], respecs[1])
+
+                fmeds = np.nanmedian([fs[sig] for sig in self.sig_seeds], axis=0)
+                etd = list(map(float, self.ells))
+                ids =  np.where([e in unspecs[0] for e in etd])
+                fdict[(m1, m2)] = [etd, fmeds[ids], fmeds[ids]]
 
                 with open(self.misc_dir+'/'+self.fl_file, 'wb') as pfile:
                     pickle.dump(fdict, pfile)
-                
+            '''
             return None
 
         else:
@@ -428,6 +482,7 @@ class SED(object):
             ss = self.sig_seeds
 
         for sig in ss:
+            print(self.spec_file, os.path.exists(self.spec_file), do_recompute)
             if os.path.exists(self.spec_file) and not do_recompute:
                 self.log.info('Found existing spectra file at %s. Loading that.', self.spec_file)
                 with open(self.spec_file, 'rb') as pfile: 
@@ -468,10 +523,10 @@ class SED(object):
                         self.log.error('Failed to load Spectra Error file %s', self.spec_err_file)
                         raise
 
-                for k in specs.keys():
-                    specs[k] = [specs[k][0], specs[k][1], specs_err[k][2]]
+                    for k in specs.keys():
+                        specs[k] = [specs[k][0], specs[k][1], specs_err[k][2]]
 
-            return_spec = specs
+                return_spec = specs
 
             d1, d2 = os.path.split(self.spec_file)
             if not os.path.exists(os.path.join(d1, sig)):
@@ -486,7 +541,7 @@ class SED(object):
         return return_spec
 
 
-    def get_posteriors(self, fl_file='default'):
+    def get_posteriors(self, fl_file='default', quash=False):
         '''
         Checks if there are posteriors in post_dir and can be read. If it can, it reads those. 
         If it fails (or recompute is appropriately set), it submits a slurm job to compute new posteriors
@@ -504,6 +559,8 @@ class SED(object):
             self.write_fl()
         
         found_conflict = self.check_config(self.post_dir)
+        if quash:
+            found_conflict = False
         self.write_config(self.post_dir)
 
         do_recompute = self.__check_recompute(['spectra', 'posteriors', 'fl'])
@@ -520,7 +577,7 @@ class SED(object):
 
             except FileNotFoundError:
                 self.log.info('No posterior files found in %s; computing posteriors and saving there',self.post_dir)
-                self.make_posteriors(fl_file=fl_file)
+                #self.make_posteriors(fl_file=fl_file)
 
                 try:
                     return_params = sl.get_data(self.post_dir, ells_to_do=etd, pols_to_do=self.pols)
@@ -586,6 +643,9 @@ class SED(object):
                 if not os.path.exists(pdir):
                     os.mkdir(pdir)
                 
+                self.sopts['output'] = f'./slurm/output_log_sedfit_{sig}'
+                self.sopts['error'] = f'./slurm/error_log_sedfit_{sig}'
+
                 d1, d2 = os.path.split(self.spec_file)
                 sf = os.path.join(d1, sig, d2)
 
@@ -593,7 +653,7 @@ class SED(object):
                     self.do_sim, self.sed_model, sf, 
                     mc, ff, elist, plist, pdir, step
                 ), 
-                              name='sedfit', **self.sopts)
+                              name=f'sedfit_{sig}', **self.sopts)
                
 
         startt = time.time()
@@ -639,7 +699,7 @@ class SED(object):
 
         return fit
         
-    def compute_errors(self, fl_file='default', nthreads=40, nnodes=1):
+    def compute_errors(self, fl_file='default', nthreads=40, nnodes=1, pairlimit=None):
         '''
         docstring
         '''
@@ -647,6 +707,12 @@ class SED(object):
             fl_file = self.fl_file
 
         pairs = list(itertools.permutations(self.seeds, 2))
+
+        if pairlimit is not None:
+            inds = np.random.choice(len(pairs), size=pairlimit, replace=False)
+            pairs = np.array(pairs)[inds]
+            pairs = [tuple(t) for t in pairs]
+            print(pairs)
 
         #procs = nthreads
         #nodes = nnodes

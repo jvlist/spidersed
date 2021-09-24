@@ -9,6 +9,8 @@ from sed2.lib import calc_spec_vec, calc_spec_harm
 #theano.config.exception_verbosity='high'
 #theano.config.optimizer='None'
 
+debug = False
+
 def init(sed_model, data, errors, ac, map_coll, do_sim, ells=None):
     '''
     Initialize the MCMC model of your choice. 
@@ -28,27 +30,36 @@ def init(sed_model, data, errors, ac, map_coll, do_sim, ells=None):
     with pymc.Model() as model:
         # Define priors, maybe different for sim and data
         if do_sim:
-            a_sync = pymc.Uniform('synchrotron_amplitude', -100, 1000)
-            b_sync = pymc.Bound(pymc.Normal, lower=-4, upper=-0.2)('synchrotron_beta', mu=-1.15, sigma=0.37)
-            a_dust = pymc.Uniform('dust_amplitude', 100, 5000)
-            b_dust = pymc.Uniform('dust_beta', 0.2, 4)
-            a_cmb = pymc.Uniform('cmb_amplitude', -4, 4)
-            corr_coeff = pymc.Uniform('correlation_coefficient', -0.9, 0.9)
-            dxc_corr = pymc.Bound(pymc.Normal, lower=-0.9, upper=0.9)('dustxcmb_correlation', mu=0, sigma=0.073)
+            a_sync = pymc.Uniform('synchrotron_amplitude', -100, 1000, testval=10.)
+            b_sync = pymc.Bound(pymc.Normal, lower=-4, upper=-0.2)('synchrotron_beta', mu=-1.15, sigma=0.37, testval=-1.)
+            a_dust = pymc.Uniform('dust_amplitude', -10, 10)#100, 5000, testval=200.)
+            b_dust = pymc.Uniform('dust_beta', -1,1)#0.2, 4, testval=1.5)
+            a_cmb = pymc.Uniform('cmb_amplitude', -4, 4, testval=1.)
+            corr_coeff = pymc.Uniform('correlation_coefficient', -0.9, 0.9, testval=0.)
+            dxc_corr = pymc.Bound(pymc.Normal, lower=-0.9, upper=0.9)('dustxcmb_correlation', mu=0, sigma=0.073, testval=0.)
         else:
-            a_sync = pymc.Uniform('synchrotron_amplitude', -100, 1000)
-            b_sync = pymc.Bound(pymc.Normal, lower=-4, upper=-0.2)('synchrotron_beta', mu=-1.15, sigma=0.37)
-            a_dust = pymc.Uniform('dust_amplitude', 100, 5000)
-            b_dust = pymc.Uniform('dust_beta', 0.2, 4)
-            a_cmb = pymc.Uniform('cmb_amplitude', -4, 4, testval=1)
-            corr_coeff = pymc.Uniform('correlation_coefficient', -0.9, 0.9)
-            dxc_corr = pymc.Bound(pymc.Normal, lower=-0.9, upper=0.9)('dustxcmb_correlation', mu=0, sigma=0.073)
+            a_sync = pymc.Uniform('synchrotron_amplitude', -100, 1000, testval=10.)
+            b_sync = pymc.Bound(pymc.Normal, lower=-4, upper=-0.2)('synchrotron_beta', mu=-1.15, sigma=0.37, testval=-1.)
+            a_dust = pymc.Uniform('dust_amplitude', 100, 5000, testval=200.)
+            b_dust = pymc.Uniform('dust_beta', 0.2, 4, testval=1.5)
+            a_cmb = pymc.Uniform('cmb_amplitude', -4, 4, testval=1.)
+            corr_coeff = pymc.Uniform('correlation_coefficient', -0.9, 0.9, testval=0.)
+            dxc_corr = pymc.Bound(pymc.Normal, lower=-0.9, upper=0.9)('dustxcmb_correlation', mu=0, sigma=0.073, testval=0.)
 
         if sed_model == 'harmonic':
-            b_d_ell = pymc.Uniform('dust_beta_ell', -2, 2)
-            b_s_ell = pymc.Uniform('sync_beta_ell', -5, 5)
-            
-
+            b_d_ell = pymc.Bound(pymc.Normal, lower=-2, upper=2)('dust_beta_ell', mu=0, sigma=1, testval=0.3)#pymc.Uniform('dust_beta_ell', -2, 2, testval=0.3)
+            b_s_ell = pymc.Bound(pymc.Normal, lower=-5, upper=5)('sync_beta_ell', mu=0, sigma=2, testval=-3.)#pymc.Uniform('sync_beta_ell', -5, 5, testval=-3.)
+       
+        if debug:
+            p_a_sync = tt.printing.Print('synchrotron_amplitude')(a_sync)
+            p_b_sync = tt.printing.Print('synchrotron_beta')(b_sync)
+            p_a_dust = tt.printing.Print('dust_amplitude')(a_dust)
+            p_b_dust = tt.printing.Print('dust_beta')(b_dust)
+            p_a_cmb = tt.printing.Print('cmb_amplitude')(a_cmb)
+            p_corr_coeff = tt.printing.Print('correlation_coefficient')(corr_coeff)
+            p_dxc_corr = tt.printing.Print('dustxcmb_correlation')(dxc_corr)
+            p_b_d_ell = tt.printing.Print('dust_beta_ell')(b_d_ell)
+            p_b_s_ell = tt.printing.Print('sync_beta_ell')(b_s_ell)
 
 
     def no_model(freq, freq_pairs):
@@ -69,7 +80,10 @@ def init(sed_model, data, errors, ac, map_coll, do_sim, ells=None):
         calcs = chosen_model(freqs, pairs, ells=ells)
 
         if sed_model == 'harmonic':
-            powers = calcs(a_sync, b_sync, a_dust, b_dust, a_cmb, corr_coeff, dxc_corr, b_d_ell, b_s_ell)
+            if not debug:
+                powers = calcs(a_sync, b_sync, a_dust, b_dust, a_cmb, corr_coeff, dxc_corr, b_d_ell, b_s_ell)
+            else:
+                powers = calcs(p_a_sync, p_b_sync, p_a_dust, p_b_dust, p_a_cmb, p_corr_coeff, p_dxc_corr, p_b_d_ell, p_b_s_ell)
         else:
             powers = calcs(a_sync, b_sync, a_dust, b_dust, a_cmb, corr_coeff, dxc_corr)  
         # Wrapping powers in pymc.Deterministic would save the MCMC trace of the bandpowers, but also slows plotting etc down because that's a lot of extra points (75 bps vs 7 parameters)

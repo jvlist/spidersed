@@ -252,6 +252,7 @@ def calc_spec_harm(params, ells, samples, component=None, grad=False):
 
     for i, ell in enumerate(ells):
         for (nu_1, nu_2) in samples:
+            #print(vals[0] == vals[1])
             nu_1 *= 1.e9
             nu_2 *= 1.e9
 

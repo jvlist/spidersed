@@ -1,4 +1,3 @@
-import pymc3 as pymc
 import numpy as np
 import pickle
 import sys
